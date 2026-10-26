@@ -6,7 +6,7 @@ import { drawSurface, Renderer } from './js/render.js';
 import { portRows, circuitRows, safeName } from './js/export.js';
 import * as SHR from './js/share.js';
 
-const VERSION = '0.4.0';
+const VERSION = '0.4.1';
 const $ = (s, el = document) => el.querySelector(s);
 const h = (tag, attrs = {}, ...kids) => {
   const el = document.createElement(tag);
@@ -85,7 +85,7 @@ function loadProject(text, name) {
   const raw = JSON.parse(text);
   const p = M.normalizeProject(raw);
   p.surfaces = p.surfaces.filter((s) => s.kind !== 'proj');
-  p._brandLock = raw._brandLock !== false;
+  p._brandLock = raw._brandLock !== false; p._noStage = !!raw._noStage;
   return p;
 }
 /** Ask a password in the page (iOS: no prompt()). Resolves null when cancelled. */
@@ -109,7 +109,7 @@ async function decodeAny(text, name, rec = {}) {
     if (info.prot === 'password' && !password) { password = await askPassword(info.name || name, bad); if (password == null) return null; }
     try {
       const r = await SHR.decodeViewerPackage(text, { password, key: rec.share ? rec.share.key : '' });
-      const p = M.normalizeProject(r.project); p.surfaces = p.surfaces.filter((s) => s.kind !== 'proj'); p.viewerOnly = true; p._brandLock = r.project._brandLock !== false;
+      const p = M.normalizeProject(r.project); p.surfaces = p.surfaces.filter((s) => s.kind !== 'proj'); p.viewerOnly = true; p._brandLock = r.project._brandLock !== false; p._noStage = !!r.project._noStage;
       return { project: p, meta: r.meta, password };
     } catch (e) {
       if (e.code === 'password' && info.prot === 'password') { password = ''; bad = true; continue; }
@@ -299,9 +299,9 @@ function renderProject(main) {
   const sum = M.cablingSummary(p);
   main.append(h('div', { class: 'kpis' },
     kpi(p.surfaces.length, t('screens')), kpi(sum.tiles, t('tiles')), kpi(sum.ports, t('ports')), kpi(sum.procs || 0, t('procs')), kpi(sum.circuits, t('circuits')), kpi(fmt((sum.wattsMax || 0) / 1000, 1), t('kw'))));
-  main.append(h('button', { class: 'stagecard', onclick: () => { S.view3d = true; history.pushState({ v: 'stage' }, ''); render(); } },
+  if (!p._noStage) main.append(h('button', { class: 'stagecard', onclick: () => { S.view3d = true; history.pushState({ v: 'stage' }, ''); render(); } },
     h('div', { class: 'ic3d' }), h('div', { class: 'grow' }, h('b', {}, t('stageOpen')), h('div', { class: 'meta' }, t('stageText'))), h('span', { class: 'chev' }, '›')));
-  main.querySelector('.ic3d').innerHTML = '<svg viewBox="0 0 24 24"><path d="M12 2l9 5v10l-9 5-9-5V7z"/><path d="M12 22V12M21 7l-9 5-9-5"/></svg>';
+  const ic3d = main.querySelector('.ic3d'); if (ic3d) ic3d.innerHTML = '<svg viewBox="0 0 24 24"><path d="M12 2l9 5v10l-9 5-9-5V7z"/><path d="M12 22V12M21 7l-9 5-9-5"/></svg>';
   const search = h('input', { class: 'search', type: 'search', placeholder: t('search'), value: S.q });
   const wrap = h('div');
   const fill = () => {
