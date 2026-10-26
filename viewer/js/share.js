@@ -1,8 +1,8 @@
 // Pixel2Pixel — protected project for technicians (Viewer), shared by the desktop app and Pixel2Pixel Viewer.
 //
-// A .p2pview file holds a reduced copy of the project (what the Viewer shows: screens, data cabling, power, 3D stage)
-// encrypted with AES-GCM 256. It cannot be opened, edited or exported by Pixel2Pixel (desktop), and the Resolume
-// mapping (composition, outputs, slices), the logos and the sharing secrets are not in it.
+// A .p2pview file holds a reduced copy of the project (what the Viewer shows: screens with their test pattern, logos and
+// texts, data cabling, power, Resolume outputs, 3D stage) encrypted with AES-GCM 256. It cannot be opened, edited or
+// exported by Pixel2Pixel (desktop); the sharing secrets, live inputs and recorded 3D takes are not in it.
 //   prot 'app'      — app key: stops casual opening / editing (not a secret against a determined developer)
 //   prot 'password' — key derived from a password (PBKDF2-SHA256, 250 000 rounds): only who has the password opens it
 //   prot 'link'     — live share: random key carried by the link (#s=<id>.<key>), never sent to the server
@@ -59,25 +59,25 @@ async function aesKey(prot, { password = '', key = '' } = {}, salt) {
 }
 
 // ---------------------------------------------------------------- content
-/** What the Viewer needs, nothing more: no Resolume mapping (outputs / slices), no logos, no sharing secrets. */
-export function viewerSubset(p, { models = true } = {}) {
+/** What the Viewer needs, nothing more: no sharing secrets, no live inputs (NDI / capture), no recorded 3D takes.
+ *  Screens, logos / texts, outputs and slices stay: the technicians see the test patterns and the outputs as delivered.
+ *  brandLock: the sender's licence is Free (the Viewer then draws the Pixel2Pixel output footer, as the app does). */
+export function viewerSubset(p, { models = true, brandLock = true } = {}) {
   const c = JSON.parse(JSON.stringify(p));
   delete c.share; delete c.ui; delete c.app;
-  c.outputs = []; c.slices = []; c.logos = [];
-  if (c.style) { c.style.logoSlots = []; c.style.footerLogo = false; }
-  for (const s of c.surfaces || []) { if (s.style) s.style.logoSlots = []; }
   if (c.stage) {
     if (!models) c.stage.models = [];
     if (c.stage.video) c.stage.video = {};          // live inputs (NDI / capture) mean nothing on a tablet
     delete c.stage.take;                              // recorded 3D takes stay in the studio
   }
+  c._brandLock = brandLock !== false;
   c.viewerOnly = true;
   return c;
 }
 
 /** Project -> .p2pview text. prot: 'app' | 'password' | 'link'. */
-export async function encodeViewerPackage(project, { prot = 'app', password = '', key = '', rev = 1, models = true } = {}) {
-  const body = enc.encode(JSON.stringify(viewerSubset(project, { models })));
+export async function encodeViewerPackage(project, { prot = 'app', password = '', key = '', rev = 1, models = true, brandLock = true } = {}) {
+  const body = enc.encode(JSON.stringify(viewerSubset(project, { models, brandLock })));
   const z = await gzip(body);
   const plain = z || body;
   const salt = randomBytes(16), iv = randomBytes(12);
@@ -106,7 +106,7 @@ export async function decodeViewerPackage(text, { password = '', key = '' } = {}
   }
   if (o.z) plain = await gunzip(plain);
   const p = JSON.parse(dec.decode(plain));
-  p.viewerOnly = true;
+  p.viewerOnly = true;   // p._brandLock: read by the Viewer before normalizeProject
   return { project: p, meta: { name: o.name, at: o.at, rev: o.rev, prot: o.prot } };
 }
 

@@ -1,7 +1,7 @@
 // Pixel2Pixel — data model, presets, helpers
 // Shared by the editor and the live output windows.
 
-export const APP_VERSION = '1.49.2';
+export const APP_VERSION = '1.49.3';
 export const FILE_FORMAT = 1;
 
 // ------------------------------------------------------------------ colour presets
