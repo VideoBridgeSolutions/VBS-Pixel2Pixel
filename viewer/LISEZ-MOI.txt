@@ -1,0 +1,20 @@
+Pixel2Pixel Viewer v0.3.1 (prototype) — Video Bridge Solutions
+
+Compagnon en lecture seule pour iPad / iPhone (et tout navigateur) : ouvre un projet .p2pmap et affiche,
+écran par écran, les plans de câblage data et d'alimentation (même moteur de rendu que Pixel2Pixel), zoomables,
+avec les tableaux des ports et des circuits. Les projets ouverts restent disponibles hors ligne sur l'appareil.
+
+Mettre en ligne (GitHub Pages, gratuit) :
+1. Dans le dépôt GitHub, créer un dossier « viewer » et y déposer le contenu de ce zip (pas le zip lui-même).
+2. Settings › Pages › Source : « Deploy from a branch », branche main, dossier / (root) › Save.
+3. Le Viewer est en ligne à : https://videobridgesolutions.github.io/VBS-Pixel2Pixel/viewer/
+   (l'adresse doit être en HTTPS pour le fonctionnement hors ligne).
+
+Installer sur iPad / iPhone : ouvrir l'adresse dans Safari › bouton Partager › « Sur l'écran d'accueil ».
+Ouvrir un projet : bouton « Ouvrir un projet », puis choisir le fichier .p2pmap (AirDrop, Fichiers, iCloud Drive, mail…).
+Plan : pincer pour zoomer, glisser pour se déplacer, double tap pour zoomer / revenir au cadrage, bouton plein écran.
+
+Projets protégés et partage en direct (Pixel2Pixel 1.49) :
+- Fichier .p2pview : envoyé par le bureau d'études (mail, AirDrop…), s'ouvre avec « Ouvrir un projet » (mot de passe si demandé).
+- Lien / QR code de partage en direct : ouvre le projet et le garde à jour automatiquement (vérification toutes les 45 s
+  quand l'app est ouverte et en ligne). Hors ligne, la dernière version reçue reste disponible.
