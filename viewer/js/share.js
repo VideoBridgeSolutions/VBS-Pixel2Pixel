@@ -62,10 +62,11 @@ async function aesKey(prot, { password = '', key = '' } = {}, salt) {
 /** What the Viewer needs, nothing more: no sharing secrets, no live inputs (NDI / capture), no recorded 3D takes.
  *  Screens, logos / texts, outputs and slices stay: the technicians see the test patterns and the outputs as delivered.
  *  brandLock: the sender's licence is Free (the Viewer then draws the Pixel2Pixel output footer, as the app does). */
-export function viewerSubset(p, { models = true, brandLock = true } = {}) {
+export function viewerSubset(p, { models = true, stage = true, brandLock = true } = {}) {
   const c = JSON.parse(JSON.stringify(p));
   delete c.share; delete c.ui; delete c.app;
-  if (c.stage) {
+  if (stage === false) { c.stage = {}; c._noStage = true; }   // no 3D stage for the technicians (placement, models, views, cues)
+  else if (c.stage) {
     if (!models) c.stage.models = [];
     if (c.stage.video) c.stage.video = {};          // live inputs (NDI / capture) mean nothing on a tablet
     delete c.stage.take;                              // recorded 3D takes stay in the studio
@@ -76,8 +77,8 @@ export function viewerSubset(p, { models = true, brandLock = true } = {}) {
 }
 
 /** Project -> .p2pview text. prot: 'app' | 'password' | 'link'. */
-export async function encodeViewerPackage(project, { prot = 'app', password = '', key = '', rev = 1, models = true, brandLock = true } = {}) {
-  const body = enc.encode(JSON.stringify(viewerSubset(project, { models, brandLock })));
+export async function encodeViewerPackage(project, { prot = 'app', password = '', key = '', rev = 1, models = true, stage = true, brandLock = true } = {}) {
+  const body = enc.encode(JSON.stringify(viewerSubset(project, { models, stage, brandLock })));
   const z = await gzip(body);
   const plain = z || body;
   const salt = randomBytes(16), iv = randomBytes(12);
