@@ -113,7 +113,8 @@ tr.sel td { background: var(--accent-soft); }
 .s3d canvas.c3d { position: absolute; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
 .loading3d { position: absolute; inset: 0; display: grid; place-items: center; color: var(--t3); }
 .loading3d.err { color: var(--err); padding: 24px; text-align: center; }
-.views3d { position: absolute; left: 12px; right: 72px; top: calc(12px + var(--safe-t, 0px)); display: flex; gap: 6px; overflow-x: auto; -webkit-overflow-scrolling: touch; z-index: 2; scrollbar-width: none; }
+.views3d { position: absolute; left: 12px; right: 12px; top: calc(12px + var(--safe-t, 0px)); display: flex; flex-wrap: wrap; gap: 6px; z-index: 2; pointer-events: none; }
+.views3d .vbtn { pointer-events: auto; }
 .views3d::-webkit-scrollbar { display: none; }
 .vbtn { flex: none; height: 36px; padding: 0 12px; border-radius: 9px; border: 1px solid var(--l2); background: rgba(23,26,30,.86); color: var(--t1); font-size: 13.5px; font-weight: 550; cursor: pointer; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
 .vbtn.saved { border-color: rgba(79,139,255,.45); color: var(--accent-text); }
@@ -132,3 +133,8 @@ tr.sel td { background: var(--accent-soft); }
 .mbtns { display: flex; justify-content: flex-end; gap: 8px; }
 .warnline { color: var(--err); font-weight: 600; font-size: 13.5px; }
 @media (max-width: 560px) { .live { font-size: 11px; padding: 3px 7px; } }
+
+/* v0.4: downloads, outputs */
+.btn.block { display: flex; width: 100%; margin-top: 12px; }
+.card.out canvas { width: 120px; height: 68px; }
+.outhead { margin-top: 22px; }
