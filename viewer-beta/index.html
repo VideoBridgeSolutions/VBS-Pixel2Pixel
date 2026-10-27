@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="theme-color" content="#121418">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="P2P Viewer">
+<title>Pixel2Pixel Viewer</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="stylesheet" href="viewer.css">
+</head>
+<body>
+<div id="app">
+  <header class="top">
+    <button class="ic back" id="btnBack" aria-label="Retour" hidden>
+      <svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>
+    </button>
+    <div class="brand"><img src="icon-192.png" alt=""><b>Pixel<span>2</span>Pixel</b><em>Viewer</em></div>
+    <div class="title" id="title"></div>
+    <span class="live" id="live" hidden></span>
+    <div class="right">
+      <div class="seg" id="lang"><button data-l="fr">FR</button><button data-l="en">EN</button></div>
+    </div>
+  </header>
+  <main id="main"></main>
+</div>
+<script type="module" src="viewer.js"></script>
+</body>
+</html>
