@@ -119,6 +119,7 @@ export class ProjectorLayer {
       e.group.position.set(pj.x, pj.y, pj.z);
       e.group.rotation.set(pj.rx * D2R, pj.ry * D2R, pj.rz * D2R, EULER);
       e.group.visible = pj.visible !== false;
+      this.syncStack(pj, e);
       const look = pj.color + '|' + pj.resW + 'x' + pj.resH;
       if (e.look !== look) { e.look = look; e.stripe.material.color.set(pj.color); e.lines.material.color.set(pj.color); e.faces.material.color.set(pj.color); }
     }
@@ -131,6 +132,28 @@ export class ProjectorLayer {
     this.shadows = st.projShadows !== false;
     this.dirty = true;
     this.update(p, true);
+  }
+
+  /** Dual / trio: extra bodies stacked along the body's own up axis (flat: one on top of the other, or below when
+   *  ceiling-hung since the body is rolled over; on its side / portrait: next to each other). The optics stay on the first body. */
+  syncStack(pj, e) {
+    const n = Math.max(1, Math.min(4, Math.round(+pj.stack || 1)));
+    if (e.stackN === n) { for (const b of e.extras || []) b.children[0].material.color.set(pj.color); return; }
+    for (const b of e.extras || []) { e.group.remove(b); for (const o of b.children.slice(0, 3)) o.geometry.dispose(); }
+    e.extras = [];
+    for (let i = 1; i < n; i++) {
+      const g = new THREE.Group();
+      const body = new THREE.Mesh(e.body.geometry.clone(), e.body.material);
+      const stripe = new THREE.Mesh(e.stripe.geometry.clone(), new THREE.MeshBasicMaterial({ color: pj.color }));
+      stripe.position.set(0, 0.1, 0); body.userData.pjid = stripe.userData.pjid = pj.id;
+      const frame = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(0.66, 0.36, 0.76)), new THREE.LineBasicMaterial({ color: 0x555a63 }));
+      const lens = new THREE.Mesh(e.lens.geometry, e.lens.material); lens.rotation.x = Math.PI / 2; lens.position.z = -0.42; lens.userData.pjid = pj.id;
+      const glass = new THREE.Mesh(e.glass.geometry, e.glass.material); glass.position.z = -0.42 - 0.071; glass.rotation.y = Math.PI;
+      g.add(stripe, body, frame, lens, glass);
+      g.position.set(0, i * 0.36, 0.42);
+      e.group.add(g); e.extras.push(g);
+    }
+    e.stackN = n;
   }
 
   make(pj) {
@@ -150,7 +173,7 @@ export class ProjectorLayer {
     this.root.add(group, outline);
     const texCanvas = document.createElement('canvas'); texCanvas.width = texCanvas.height = 4;
     const tex = new THREE.CanvasTexture(texCanvas); tex.colorSpace = THREE.SRGBColorSpace; tex.minFilter = THREE.LinearMipmapLinearFilter; tex.generateMipmaps = true; tex.anisotropy = 8;
-    return { group, body, stripe, lines, faces, outline, tex, texCanvas, key: null, look: null, fkey: null };
+    return { group, body, stripe, lens, glass, lines, faces, outline, tex, texCanvas, key: null, look: null, fkey: null };
   }
 
   /** Per frame: textures (when their pixelmap changed), matrices, frustum length (distance to what it hits). */
@@ -360,18 +383,21 @@ export class ProjectorLayer {
       ray.set(o, dir); ray.far = 400;
       const hit = recv.length ? ray.intersectObjects(recv, false)[0] : null;
       const depth = hit ? hit.distance * new THREE.Vector3(f.cx, f.cy, -1).normalize().z * -1 : 12;
-      const fkey = [f.l, f.r, f.b, f.t, depth.toFixed(3)].join(',');
+      const nB = Math.max(1, Math.min(4, Math.round(+pj.stack || 1)));
+      const fkey = [f.l, f.r, f.b, f.t, depth.toFixed(3), nB].join(',');
       e.hitDepth = hit ? depth : null;
       if (fkey === e.fkey) continue;
       e.fkey = fkey;
       const D = Math.max(0.2, depth);
       const C = [[f.l * D, f.b * D, -D], [f.r * D, f.b * D, -D], [f.r * D, f.t * D, -D], [f.l * D, f.t * D, -D]];
+      // dual / trio: one cone per body, every lens converging on the same image (superimposed stack)
+      const A = []; for (let k = 0; k < nB; k++) A.push([0, k * 0.36, -0.07]);
       const L = [];
-      for (const c of C) L.push(0, 0, -0.07, ...c);
+      for (const a of A) for (const c of C) L.push(...a, ...c);
       for (let i = 0; i < 4; i++) L.push(...C[i], ...C[(i + 1) % 4]);
       e.lines.geometry.dispose(); e.lines.geometry = new THREE.BufferGeometry(); e.lines.geometry.setAttribute('position', new THREE.Float32BufferAttribute(L, 3));
       const F = [];
-      for (let i = 0; i < 4; i++) F.push(0, 0, -0.07, ...C[i], ...C[(i + 1) % 4]);
+      for (const a of A) for (let i = 0; i < 4; i++) F.push(...a, ...C[i], ...C[(i + 1) % 4]);
       e.faces.geometry.dispose(); e.faces.geometry = new THREE.BufferGeometry(); e.faces.geometry.setAttribute('position', new THREE.Float32BufferAttribute(F, 3));
     }
   }
@@ -453,12 +479,14 @@ export class ProjectorLayer {
     return { total, blocked, pct: total ? blocked / total * 100 : 0, list: [...tally.entries()].sort((a, b) => b[1] - a[1]), spill, people: cyl.length };
   }
 
-  setSelected(id, presentation) {
+  setSelected(id, presentation, ids = null) {
+    const set = new Set(ids && ids.length ? ids : (id ? [id] : []));
     for (const [pid, e] of this.items) {
-      e.outline.visible = !presentation && pid === id;
+      const on = set.has(pid);
+      e.outline.visible = !presentation && on;
       if (e.outline.visible) e.outline.update();
-      e.lines.material.opacity = pid === id ? 1 : 0.6;
-      e.faces.material.opacity = pid === id ? 0.08 : 0.04;
+      e.lines.material.opacity = on ? 1 : 0.6;
+      e.faces.material.opacity = on ? 0.08 : 0.04;
     }
   }
   setPresentation(on) { for (const e of this.items.values()) { e.lines.visible = !on; e.faces.visible = !on; if (on) e.outline.visible = false; } }

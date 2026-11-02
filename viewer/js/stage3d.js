@@ -11,116 +11,16 @@ import { buildMappedGeometry, thinNormal } from './meshmap.js';
 import { StageFX, personGeometry } from './stagefx.js';
 import { ProjectorLayer } from './projview.js';
 import * as P from './projectors.js';
+import { nodeObjects, applyHidden } from './modelwizard.js';
+import { pickFirst } from './pickbvh.js';
+import { buildProxy, disposeProxy } from './modelproxy.js';
 
 const D2R = Math.PI / 180;
 const EULER = 'YXZ'; // yaw (ry), then tilt (rx), then roll (rz)
 
-/**
- * Profile of a bent strip: cabinets of lengths L[i] (m) joined with angles A[i] (deg, + = concave / towards the front).
- * Walks along "a" with front "f", normalises the chord onto the a axis and centres on half the arc length.
- * Returns stations { a, f, na, nf } at every cut.
- */
-function bentProfile(L, A) {
-  const n = L.length;
-  const heads = [0];
-  for (let i = 1; i < n; i++) heads.push(heads[i - 1] + ((A[i - 1] || 0) * D2R));
-  const pts = [[0, 0]];
-  for (let i = 0; i < n; i++) pts.push([pts[i][0] + L[i] * Math.cos(heads[i]), pts[i][1] + L[i] * Math.sin(heads[i])]);
-  const chi = Math.atan2(pts[n][1], pts[n][0]);
-  const c = Math.cos(-chi), sn = Math.sin(-chi);
-  const rp = pts.map(([a, f]) => [a * c - f * sn, a * sn + f * c]);
-  const hs = heads.map((h) => h - chi);
-  const total = L.reduce((x, y) => x + y, 0), half = total / 2;
-  let acc = 0, mid = [0, 0];
-  for (let i = 0; i < n; i++) {
-    if (acc + L[i] >= half - 1e-9) { const k = L[i] ? (half - acc) / L[i] : 0; mid = [rp[i][0] + (rp[i + 1][0] - rp[i][0]) * k, rp[i][1] + (rp[i + 1][1] - rp[i][1]) * k]; break; }
-    acc += L[i];
-  }
-  return rp.map(([a, f], i) => {
-    const h0 = hs[Math.max(0, i - 1)], h1 = hs[Math.min(n - 1, i)];
-    const hm = i === 0 ? h1 : i === n ? h0 : (h0 + h1) / 2;
-    return { a: a - mid[0], f: f - mid[1], na: -Math.sin(hm), nf: Math.cos(hm) };
-  });
-}
-
-/** Joint angles per column (h) / row (v): explicit list (mode 'joints') or uniform curve ('h' / 'v' + curveDeg). */
-function jointAngles(s, axis, count) {
-  const sg = s.stage || {};
-  if (sg.curve === 'joints') { const arr = (axis === 'h' ? sg.jh : sg.jv) || []; return Array.from({ length: count }, (_, i) => +arr[i] || 0); }
-  if (sg.curve === axis && Math.abs(sg.curveDeg || 0) > 1e-4) return Array.from({ length: count }, () => +sg.curveDeg);
-  return Array.from({ length: count }, () => 0);
-}
-
-/**
- * Unified screen geometry: horizontal profile (joints / uniform / rail) swept with the vertical profile (joints / uniform).
- * One facet per cabinet; rails add stations where they bend. Rail geometry is in rail space with absolute Y.
- */
-export function surfaceGeometry(p, s, rail = null) {
-  const m = M.surfaceMeters(p, s);
-  const { xc, yc } = M.jointCuts(p, s);
-  // ---- horizontal stations { x, z, nx, nz, u }
-  let H;
-  if (rail) {
-    const rb = M.railBuild(rail);
-    const d0 = +s.stage.railOffset || 0;
-    const ds = xc.map((v) => d0 + v * m.mx);
-    ds.push(...rb.bends(d0, d0 + m.w));
-    const uniq = [...new Set(ds.map((v) => Math.round(v * 1e5) / 1e5))].sort((a, b) => a - b);
-    H = uniq.map((d) => { const q = rb.at(d); return { x: q.x, z: q.z, nx: -Math.sin(q.th), nz: Math.cos(q.th), u: (d - d0) / m.w }; });
-    if (s.stage.railFlip) H = H.reverse().map((q) => ({ ...q, nx: -q.nx, nz: -q.nz, u: 1 - q.u }));
-  } else {
-    const A = jointAngles(s, 'h', xc.length - 2);
-    const bent = A.some((a) => a);
-    const cuts = bent ? xc : [0, s.w];
-    const L = cuts.slice(1).map((v, i) => (v - cuts[i]) * m.mx);
-    H = bentProfile(L, bent ? A : []).map((q, i) => ({ x: q.a, z: q.f, nx: q.na, nz: q.nf, u: cuts[i] / s.w }));
-  }
-  // ---- vertical stations { y, f, ny, nf, v } (top -> bottom)
-  const AV = jointAngles(s, 'v', yc.length - 2);
-  const vb = AV.some((a) => a);
-  const ycut = vb ? yc : [0, s.h];
-  const LV = ycut.slice(1).map((v, i) => (v - ycut[i]) * m.my);
-  const yOff = rail ? (+s.stage.y || 0) : 0;
-  const V = bentProfile(LV, vb ? AV : []).map((q, j) => ({ y: yOff - q.a, f: q.f, ny: -q.na, nf: q.nf, v: 1 - ycut[j] / s.h }));
-  // ---- grid
-  const nh = H.length, nv = V.length;
-  const pos = [], uv = [], nrm = [];
-  const up = !!(rail && s.stage.upside);          // hung upside down on the rail: pixel (0,0) bottom-right seen from the front
-  for (const hq of H) for (const vq of V) {
-    pos.push(hq.x + hq.nx * vq.f, vq.y, hq.z + hq.nz * vq.f);
-    uv.push(up ? 1 - hq.u : hq.u, up ? 1 - vq.v : vq.v);
-    const nx = hq.nx * vq.nf, ny = vq.ny, nz = hq.nz * vq.nf, l = Math.hypot(nx, ny, nz) || 1;
-    nrm.push(nx / l, ny / l, nz / l);
-  }
-  const I = (i, j) => i * nv + j;
-  const index = [];
-  for (let i = 0; i < nh - 1; i++) for (let j = 0; j < nv - 1; j++) {
-    const A0 = I(i, j), B0 = I(i + 1, j), C0 = I(i, j + 1), D0 = I(i + 1, j + 1);
-    index.push(A0, C0, B0, B0, C0, D0);
-  }
-  // ---- cabinet shell: back grid + 4 sides
-  const depth = 0.085;
-  const nF = nh * nv;
-  const shell = [...pos];
-  for (let k = 0; k < nF; k++) shell.push(pos[k * 3] - nrm[k * 3] * depth, pos[k * 3 + 1] - nrm[k * 3 + 1] * depth, pos[k * 3 + 2] - nrm[k * 3 + 2] * depth);
-  const shellIdx = [];
-  const Bk = (i, j) => nF + I(i, j);
-  for (let i = 0; i < nh - 1; i++) for (let j = 0; j < nv - 1; j++) shellIdx.push(Bk(i, j), Bk(i + 1, j), Bk(i, j + 1), Bk(i + 1, j), Bk(i + 1, j + 1), Bk(i, j + 1));
-  const side = (a, b) => shellIdx.push(a, nF + a, b, nF + a, nF + b, b);
-  for (let i = 0; i < nh - 1; i++) { side(I(i, 0), I(i + 1, 0)); side(I(i, nv - 1), I(i + 1, nv - 1)); }
-  for (let j = 0; j < nv - 1; j++) { side(I(0, j), I(0, j + 1)); side(I(nh - 1, j), I(nh - 1, j + 1)); }
-  // ---- outline (border loop)
-  const loop = [];
-  for (let i = 0; i < nh; i++) loop.push(I(i, nv - 1));
-  for (let j = nv - 1; j >= 0; j--) loop.push(I(nh - 1, j));
-  for (let i = nh - 1; i >= 0; i--) loop.push(I(i, 0));
-  for (let j = 0; j < nv; j++) loop.push(I(0, j));
-  const outline = [];
-  for (const k of loop) outline.push(pos[k * 3], pos[k * 3 + 1], pos[k * 3 + 2]);
-  return { pos, uv, index, outline, shell, shellIdx, meters: m, facets: (nh - 1) * (nv - 1) };
-}
-export const screenGeometry = (p, s) => surfaceGeometry(p, s, null);
-export const railGeometry = (p, s, rail) => surfaceGeometry(p, s, rail);
+// screen geometry (pure, shared with the 2D renderer for effects in stage space): ./geometry.js
+import { surfaceGeometry, screenGeometry, railGeometry } from './geometry.js';
+export { surfaceGeometry, screenGeometry, railGeometry };
 
 /** Live source of a surface: { key: 'ndi:<name>' | 'dev:<deviceId>', mode: 'comp' | 'full' } or null. */
 export const liveSourceOf = M.liveSourceOf;
@@ -161,6 +61,9 @@ export class Stage3D {
     this.models = new Map();    // id -> { obj, dataKey, loading }
     this.tool = 'translate';
     this.snap = true;
+    this.altKey = false;             // Alt held while dragging: no snapping
+    const kd = (e) => { this.altKey = e.altKey; };
+    window.addEventListener('keydown', kd); window.addEventListener('keyup', kd); window.addEventListener('blur', () => { this.altKey = false; });
     this.anim = null;
 
     const r = this.renderer3 = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true });
@@ -178,6 +81,8 @@ export class Stage3D {
 
     this.ref = new THREE.Group(); this.scene.add(this.ref);
     this.screenRoot = new THREE.Group(); this.scene.add(this.screenRoot);
+    this.labelRoot = new THREE.Group(); this.scene.add(this.labelRoot);   // technical view: name tag above each screen
+    this.labels = new Map();    // surface id -> { sprite, key }
     this.modelRoot = new THREE.Group(); this.scene.add(this.modelRoot);
     this.motionRoot = new THREE.Group(); this.motionRoot.name = 'motion'; this.scene.add(this.motionRoot);   // virtual limits of motorised items (editor only)
     this.peopleRoot = new THREE.Group(); this.peopleRoot.name = 'people'; this.scene.add(this.peopleRoot);
@@ -193,6 +98,8 @@ export class Stage3D {
     this.orbit.addEventListener('change', () => this.dirtyView = true);
 
     this.pivot = new THREE.Object3D(); this.scene.add(this.pivot);
+    this.snapGuides = new THREE.Group(); this.snapGuides.renderOrder = 999; this.scene.add(this.snapGuides);
+    this.snapMat = new THREE.LineBasicMaterial({ color: 0xff3d9a, depthTest: false, transparent: true, opacity: 0.95 });
     this.gizmo = new TransformControls(this.camera, canvas);
     this.gizmo.setSize(0.9);
     this.gizmoHelper = this.gizmo.getHelper ? this.gizmo.getHelper() : this.gizmo;
@@ -212,15 +119,16 @@ export class Stage3D {
       if (moved > 4) return;
       if (e.button === 2) { if (!this.meshPick && this.h.contextMenu) this.h.contextMenu(this.pick(e), e); return; }
       if (e.button !== 0) return;
-      if (this.meshPick) { const hit = this.pickMesh(e); if (hit) { const cb = this.meshPick; this.meshPick = null; this.canvas.style.cursor = ''; cb(hit); } return; }
+      if (this.meshPick) { const hit = this.pickMesh(e); if (hit) { const cb = this.meshPick; this.endMeshPick(); cb(hit); } else if (this.h.onMeshPickMiss) this.h.onMeshPickMiss(this.pick(e)); return; }
       if (this.gizmoAxisHover()) return;
       const pjid = this.pickProjector(e);
-      if (pjid && this.h.selectProjector) { this.h.selectProjector(pjid); return; }
+      if (pjid && this.h.selectProjector) { this.h.selectProjector(pjid, e.shiftKey || e.metaKey || e.ctrlKey); return; }
       const psid = this.pickPerson(e);
       if (psid && this.h.selectPerson) { this.h.selectPerson(psid); return; }
       const id = this.pick(e);
       this.h.select(id ? [id] : [], e.shiftKey || e.metaKey || e.ctrlKey);
     });
+    canvas.addEventListener('pointermove', (e) => { if (this.meshPick && !this.down) this.hoverMesh(e); });
     canvas.addEventListener('dblclick', (e) => { const id = this.pick(e); if (id) this.frame([id]); });
     canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
@@ -238,6 +146,16 @@ export class Stage3D {
     requestAnimationFrame(this.loop);
   }
   deactivate() { this.active = false; }
+  /** Another project opened: drop every object of the previous one (rebuilt from the new project on the next sync). */
+  resetProject() {
+    for (const e of this.screens.values()) { this.screenRoot.remove(e.group); if (e.mapped) this.scene.remove(e.mapped, e.mappedBox); try { this.setMappedRest(e, [], null); } catch (_) { /* none */ } e.tex.dispose(); e.front.geometry.dispose(); }
+    this.screens.clear();
+    for (const e of this.labels.values()) { this.labelRoot.remove(e.sprite); if (e.sprite.material.map) e.sprite.material.map.dispose(); e.sprite.material.dispose(); }
+    this.labels.clear();
+    if (this.deck) { this.scene.remove(this.deck); this.deck = null; } this.deckKey = null; this.deckBox = null;
+    this.refKey = null; this.syncCount = 0;
+    this.anim = null;
+  }
 
   /** Fixed render size (video recording at 1080p / 4K): the canvas renders at w×h whatever its box, shown letterboxed. null = follow the viewport. */
   setFixedSize(size) {
@@ -291,6 +209,8 @@ export class Stage3D {
       const sig = [c.x, c.y, c.z, tg.x, tg.y, tg.z, this.persp.fov, this.isOrtho ? this.orthoH / this.ortho.zoom : 0].map((v) => v.toFixed(3)).join(',');
       if (sig !== this.camSig) { this.camSig = sig; this.h.onCamera(this.currentView()); }
     }
+    this.updateProxies();
+    this.fitClipping();
     this.updateTextures(false);
     this.updateLive(this.h.getProject());
     this.projLayer.update(this.h.getProject());
@@ -300,6 +220,7 @@ export class Stage3D {
   }
   /** Render; orthographic views are technical plans: no haze (depth-based) and no floor mirror (perspective only). */
   renderFrame(now) {
+    if (this.labels.size) this.placeLabels();
     if (!this.isOrtho) { this.fx.render(now); return; }
     const fog = this.scene.fog, refl = this.fx.reflector, floor = this.ref.getObjectByName('floor');
     const fo = floor ? floor.material.opacity : 1;
@@ -350,6 +271,29 @@ export class Stage3D {
     this.useCamera(on ? this.ortho : this.persp);
     if (this.h.onProjection) this.h.onProjection(on);
   }
+  /**
+   * Depth range fitted to the view: near plane pushed out with the distance to the target, far plane just past the scene
+   * (screens + models). A fixed 5 cm – 2 km range made close surfaces of a big venue fight for the same depth
+   * (flickering stripes when the camera moves).
+   */
+  fitClipping() {
+    if (this.isOrtho) return;
+    const cam = this.persp;
+    if (!this.clipBox || this.clipKey !== this.syncCount) {
+      this.clipKey = this.syncCount;
+      const b = this.screensBox().clone();
+      for (const e of this.models.values()) if (e.holder.visible && (e.proxy || e.obj)) b.union(new THREE.Box3().setFromObject(e.proxy ? e.proxy.group : e.obj));
+      this.clipBox = b;
+      this.clipSphere = b.isEmpty() ? new THREE.Sphere(new THREE.Vector3(), 20) : b.getBoundingSphere(new THREE.Sphere());
+    }
+    const d = Math.max(0.1, cam.position.distanceTo(this.orbit.target));
+    const sp = this.clipSphere;
+    const toFar = cam.position.distanceTo(sp.center) + sp.radius;
+    const near = Math.min(2, Math.max(0.05, d * 0.004));
+    const far = Math.max(450, toFar * 1.15, near * 100);   // ≥ 450 m: the 400 m floor never ends in a visible line
+    if (Math.abs(cam.near - near) / cam.near > 0.05 || Math.abs(cam.far - far) / cam.far > 0.05) { cam.near = near; cam.far = far; cam.updateProjectionMatrix(); }
+  }
+
   sceneRadius() {
     const b = this.screensBox();
     return b.isEmpty() ? 10 : b.getSize(new THREE.Vector3()).length() / 2 + b.getCenter(new THREE.Vector3()).length();
@@ -376,6 +320,120 @@ export class Stage3D {
     return out;
   }
 
+  // ------------------------------------------------------------------ stage deck
+  /** Grey deck (praticable): auto footprint from the screens, outlined in technical looks. */
+  syncDeck(p) {
+    const st = p.stage, rr = st.render || {};
+    const D = M.deckOf(st);
+    let geo = null;
+    if (D.on) {
+      let w = +D.w || 12, d = +D.d || 8, x = +D.x || 0, z = +D.z || 0;
+      const h = Math.max(0.02, +D.h || 0);
+      if (D.auto) {
+        const b = new THREE.Box3();
+        for (const e of this.screens.values()) if (e.group.visible) b.expandByObject(e.front);
+        if (!b.isEmpty()) {
+          w = Math.max(4, (b.max.x - b.min.x) + 2);
+          d = Math.max(6, (b.max.z - b.min.z) + 2);
+          x = (b.min.x + b.max.x) / 2;
+          z = b.min.z + d / 2 - 0.5;
+        }
+      }
+      geo = { w: Math.round(w * 100) / 100, d: Math.round(d * 100) / 100, h, x, z };
+    }
+    const col = D.color || (rr.tech && rr.deckColor) || '#3a3e47';
+    const line = rr.tech ? (rr.techLine || '#1b1e24') : '#5a6070';
+    const key = JSON.stringify([geo, col, line]);
+    this.deckBox = geo ? { x0: geo.x - geo.w / 2, x1: geo.x + geo.w / 2, z0: geo.z - geo.d / 2, z1: geo.z + geo.d / 2, h: geo.h } : null;
+    if (key === this.deckKey) return;
+    this.deckKey = key;
+    if (this.deck) { this.scene.remove(this.deck); this.deck.traverse((o) => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); }); this.deck = null; }
+    if (!geo) return;
+    const g = new THREE.Group(); g.name = 'deck';
+    const bx = new THREE.BoxGeometry(geo.w, geo.h - 0.004, geo.d);
+    const mesh = new THREE.Mesh(bx, new THREE.MeshStandardMaterial({ color: col, roughness: 0.92 }));
+    const edges = new THREE.LineSegments(new THREE.EdgesGeometry(bx), new THREE.LineBasicMaterial({ color: line, transparent: true, opacity: 0.9 }));
+    g.add(mesh, edges);
+    g.position.set(geo.x, (geo.h - 0.004) / 2, geo.z);
+    this.deck = g;
+    this.scene.add(g);
+  }
+
+  /** Screens over the deck footprint that are (partly) inside it: how much to raise each one so it stands on it
+   *  (floor LED: top at the deck height; upright screens: bottom edge on the deck). [{ id, dy }] */
+  deckLift() {
+    const dk = this.deckBox; if (!dk) return [];
+    const out = [], b = new THREE.Box3();
+    for (const [id, e] of this.screens) {
+      if (!e.group.visible || e.rail) continue;
+      b.setFromObject(e.front); if (b.isEmpty()) continue;
+      if (b.max.x <= dk.x0 || b.min.x >= dk.x1 || b.max.z <= dk.z0 || b.min.z >= dk.z1) continue;
+      const flat = b.max.y - b.min.y < 0.05;
+      const dy = flat ? dk.h - b.max.y : dk.h - b.min.y;
+      if (dy > 0.001) out.push({ id, dy: Math.round(dy * 1000) / 1000 });
+    }
+    return out;
+  }
+
+  // ------------------------------------------------------------------ technical view labels
+  /** Name tag (name · pixels · metres) above every visible screen when stage.render.labels is on. */
+  syncLabels(p) {
+    const rr = (p.stage && p.stage.render) || {};
+    const on = !!rr.labels;
+    const seen = new Set();
+    if (on) for (const s of p.surfaces) {
+      if (s.visible === false) continue;
+      seen.add(s.id);
+      const m = M.surfaceMeters(p, s);
+      const fmt = (v) => (Math.round(v * 100) / 100).toLocaleString(undefined, { maximumFractionDigits: 2 });
+      const sub = `${s.w} × ${s.h} px · ${fmt(m.w)} × ${fmt(m.h)} m`;
+      const key = [s.name, sub, rr.labelBg, rr.labelInk].join('|');
+      let e = this.labels.get(s.id);
+      if (!e) {
+        const sp = new THREE.Sprite(new THREE.SpriteMaterial({ depthTest: false, depthWrite: false, transparent: true, sizeAttenuation: false }));
+        sp.renderOrder = 20; sp.center.set(0.5, 0);
+        this.labelRoot.add(sp);
+        e = { sprite: sp, key: null };
+        this.labels.set(s.id, e);
+      }
+      if (e.key !== key) {
+        e.key = key;
+        const c = document.createElement('canvas'); c.width = 640; c.height = 132;
+        const x = c.getContext('2d');
+        x.font = '600 46px Inter, Arial, sans-serif';
+        const w1 = x.measureText(s.name).width;
+        x.font = '400 30px Inter, Arial, sans-serif';
+        const w2 = x.measureText(sub).width;
+        const bw = Math.min(c.width - 4, Math.max(w1, w2) + 40);
+        const x0 = (c.width - bw) / 2;
+        x.fillStyle = rr.labelBg || 'rgba(24,26,30,0.86)';
+        x.beginPath(); x.roundRect(x0, 4, bw, 124, 14); x.fill();
+        x.fillStyle = rr.labelInk || '#ffffff'; x.textAlign = 'center'; x.textBaseline = 'alphabetic';
+        x.font = '600 46px Inter, Arial, sans-serif'; x.fillText(s.name, c.width / 2, 58, bw - 24);
+        x.globalAlpha = 0.72; x.font = '400 30px Inter, Arial, sans-serif'; x.fillText(sub, c.width / 2, 104, bw - 24);
+        const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 4;
+        if (e.sprite.material.map) e.sprite.material.map.dispose();
+        e.sprite.material.map = tex; e.sprite.material.needsUpdate = true;
+      }
+    }
+    for (const [id, e] of this.labels) if (!seen.has(id)) { this.labelRoot.remove(e.sprite); if (e.sprite.material.map) e.sprite.material.map.dispose(); e.sprite.material.dispose(); this.labels.delete(id); }
+    this.labelRoot.visible = on;
+  }
+  /** Labels follow their screen (motion cues included) at a constant size on screen. */
+  placeLabels() {
+    const box = this._lbBox || (this._lbBox = new THREE.Box3());
+    const k = this.isOrtho ? this.orthoH * 0.085 : 0.042;   // height of the tag: ~4 % of the view
+    for (const [id, e] of this.labels) {
+      const sc = this.screens.get(id);
+      if (!sc || !sc.group.visible) { e.sprite.visible = false; continue; }
+      box.setFromObject(sc.front);
+      if (box.isEmpty()) { e.sprite.visible = false; continue; }
+      e.sprite.visible = true;
+      e.sprite.position.set((box.min.x + box.max.x) / 2, box.max.y + 0.12, (box.min.z + box.max.z) / 2);
+      e.sprite.scale.set(k * 640 / 132, k, 1);
+    }
+  }
+
   // ------------------------------------------------------------------ reference scene
   buildReference() {
     const g = this.ref;
@@ -387,14 +445,15 @@ export class Stage3D {
       g.add(floor);
     }
     if (st.grid) {
-      const g1 = new THREE.GridHelper(100, 100, 0x3a404c, 0x2c313b); g1.material.transparent = true; g1.material.opacity = 0.7;
-      const g10 = new THREE.GridHelper(100, 10, 0x56607a, 0x56607a);
+      const rt = st.render && st.render.tech ? st.render : null;      // technical plan: grid colours that read on a light or dark floor
+      const g1 = new THREE.GridHelper(100, 100, rt ? (rt.techGridA || 0xc4c9d2) : 0x3a404c, rt ? (rt.techGridA || 0xc4c9d2) : 0x2c313b); g1.material.transparent = true; g1.material.opacity = 0.7;
+      const g10 = new THREE.GridHelper(100, 10, rt ? (rt.techGridB || 0x9aa1ad) : 0x56607a, rt ? (rt.techGridB || 0x9aa1ad) : 0x56607a);
       g.add(g1, g10);
     }
     if (st.axes) { const ax = new THREE.AxesHelper(2); ax.position.y = 0.01; g.add(ax); }
     if (st.human) {
       // 1.80 m silhouette for scale
-      const mat = new THREE.MeshStandardMaterial({ color: 0x8a93a6, roughness: 0.8 });
+      const mat = new THREE.MeshStandardMaterial({ color: st.render && st.render.tech ? (st.render.techHuman || 0x3b3e44) : 0x8a93a6, roughness: 0.8 });
       const man = new THREE.Group(); man.name = 'human';
       const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.19, 0.78, 6, 16), mat); body.position.y = 1.0; body.scale.z = 0.62;
       const head = new THREE.Mesh(new THREE.SphereGeometry(0.115, 20, 14), mat); head.position.y = 1.68;
@@ -411,14 +470,19 @@ export class Stage3D {
     if (!this.human) return;
     const b = this.screensBox();
     if (b.isEmpty()) { this.human.position.set(0, 0, 2); return; }
-    this.human.position.set(b.min.x - 1.2, 0, Math.max(b.max.z, 0) + 1.5);
+    const dk = this.deckBox;
+    const hx = b.min.x - 1.2, hz = Math.max(b.max.z, 0) + 1.5;
+    this.human.position.set(hx, 0, hz);
+    if (dk) { const x = Math.max(dk.x0 + 0.6, Math.min(hx, dk.x1 - 0.6)), z = dk.z1 - 0.8; this.human.position.set(x, dk.h, z); }
   }
 
   // ------------------------------------------------------------------ project sync
   sync() {
+    this.syncCount = (this.syncCount || 0) + 1;   // scene extent recomputed for the depth range
     const p = this.h.getProject();
     const st = p.stage;
-    const refKey = JSON.stringify([st.floor, st.grid, st.human, st.axes]);
+    const rr = st.render || {};
+    const refKey = JSON.stringify([st.floor, st.grid, st.human, st.axes, !!rr.tech, rr.techGridA, rr.techGridB, rr.techHuman]);
     if (refKey !== this.refKey) { this.refKey = refKey; this.buildReference(); }
     const seen = new Set();
     for (const s of p.surfaces) {
@@ -440,10 +504,13 @@ export class Stage3D {
       }
       e.group.visible = s.visible !== false;
       e.back.visible = st.backs !== false;
+      if (e.tline) { e.tline.visible = !!rr.tech; if (rr.tech) e.tline.material.color.set(rr.techLine || '#1b1e24'); }
       this.syncReceiver(e, s, st);
       if (e.front.material.color) e.front.material.color.setScalar(Math.max(0.1, st.glow ?? 1));
     }
-    for (const [id, e] of this.screens) if (!seen.has(id)) { this.screenRoot.remove(e.group); if (e.mapped) this.scene.remove(e.mapped, e.mappedBox); e.tex.dispose(); e.front.geometry.dispose(); this.screens.delete(id); }
+    for (const [id, e] of this.screens) if (!seen.has(id)) { this.screenRoot.remove(e.group); if (e.mapped) this.scene.remove(e.mapped, e.mappedBox); this.setMappedRest(e, [], null); e.tex.dispose(); e.front.geometry.dispose(); this.screens.delete(id); }
+    this.syncLabels(p);
+    this.syncDeck(p);
     this.syncRails(p);
     this.syncModels(p);
     this.syncMapped(p);
@@ -689,15 +756,30 @@ export class Stage3D {
     const texCanvas = document.createElement('canvas'); texCanvas.width = texCanvas.height = 4;
     const tex = new THREE.CanvasTexture(texCanvas);
     tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = 8; tex.generateMipmaps = true; tex.minFilter = THREE.LinearMipmapLinearFilter;
-    const front = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshBasicMaterial({ map: tex, side: THREE.FrontSide, toneMapped: false }));
+    // test animation: light overlay layer (≤ 640 px, no mipmaps) composited by the GPU over the static pixelmap, so the
+    // full-resolution map is not redrawn and re-uploaded every frame (dozens of Mpx on big walls)
+    const animCanvas = document.createElement('canvas'); animCanvas.width = animCanvas.height = 4;
+    const animTex = new THREE.CanvasTexture(animCanvas);
+    animTex.colorSpace = THREE.SRGBColorSpace; animTex.generateMipmaps = false; animTex.minFilter = THREE.LinearFilter;
+    const fmat = new THREE.MeshBasicMaterial({ map: tex, side: THREE.FrontSide, toneMapped: false });
+    const animU = { animMap: { value: animTex }, animOn: { value: 0 } };
+    fmat.onBeforeCompile = (sh) => {
+      Object.assign(sh.uniforms, animU);
+      sh.fragmentShader = 'uniform sampler2D animMap;\nuniform float animOn;\n' + sh.fragmentShader.replace('#include <map_fragment>',
+        '#include <map_fragment>\n#ifdef USE_MAP\nif (animOn > 0.5) { vec4 anC = texture2D(animMap, vMapUv); diffuseColor.rgb = mix(diffuseColor.rgb, anC.rgb, anC.a); }\n#endif');
+    };
+    fmat.customProgramCacheKey = () => 'p2p-screen-anim';
+    const front = new THREE.Mesh(new THREE.BufferGeometry(), fmat);
     front.userData.sid = s.id;
     const back = new THREE.Mesh(new THREE.BufferGeometry(), new THREE.MeshStandardMaterial({ color: 0x30343d, roughness: 0.75, metalness: 0.25, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: 1, polygonOffsetUnits: 1 }));
     back.userData.sid = s.id;
     const outline = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0x4f8bff, depthTest: false, transparent: true }));
     outline.renderOrder = 10; outline.visible = false;
-    group.add(front, back, outline);
+    const tline = new THREE.Line(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0x1b1e24 }));   // technical plan: every screen outlined
+    tline.renderOrder = 9; tline.visible = false;
+    group.add(front, back, outline, tline);
     this.screenRoot.add(group);
-    return { group, front, back, outline, tex, texCanvas, key: null, geoKey: null };
+    return { group, front, back, outline, tline, tex, texCanvas, animCanvas, animTex, animU, key: null, geoKey: null };
   }
 
   /** Surfaces mapped onto a mesh of an imported model: the mesh (unwrapped) shows the live pixelmap instead of the flat screen. */
@@ -715,13 +797,21 @@ export class Stage3D {
       const md = mm ? p.stage.models.find((x) => x.id === mm.model) : null;
       if (!mesh || !md) {
         if (e.mapped) { this.scene.remove(e.mapped, e.mappedBox); e.mapped.geometry.dispose(); e.mapped = null; e.mappedKey = null; }
+        this.setMappedRest(e, [], null); e.mapTouched = null;
         if (mm && md) e.group.visible = false;   // mapped, model still loading: nothing until the mesh exists
         continue;
       }
-      const key = JSON.stringify([mm, md.x, md.y, md.z, md.rx, md.ry, md.rz, md.scale, md.unit, meshes.map((m) => m.uuid)]);
+      const objKey = mm.model + '|' + idxs.slice().sort((a, b) => a - b).join(',');
+      const exclude = mm.range ? p.surfaces.filter((x) => x.id !== s.id && x.stage.mesh && x.stage.mesh.range && x.stage.mesh.model === mm.model
+        && (Array.isArray(x.stage.mesh.indices) && x.stage.mesh.indices.length ? x.stage.mesh.indices : [x.stage.mesh.index]).slice().sort((a, b) => a - b).join(',') === objKey.split('|')[1]).map((x) => x.stage.mesh.range) : [];
+      const key = JSON.stringify([mm, exclude, md.x, md.y, md.z, md.rx, md.ry, md.rz, md.scale, md.unit, meshes.map((m) => m.uuid)]);
       if (key !== e.mappedKey || !e.mapped || this.mapDirty) {
         me.holder.updateMatrixWorld(true);
-        const { geometry, info } = buildMappedGeometry(meshes, mm);
+        // hand corrections are keyed by the model's mesh index; the mapper wants the position in the list
+        const snapFix = mm.snapFix && typeof mm.snapFix === 'object' ? Object.fromEntries(Object.entries(mm.snapFix).map(([mi, d]) => [idxs.indexOf(+mi), d]).filter(([k]) => k >= 0)) : null;
+        const { geometry, info, touched, rest } = buildMappedGeometry(meshes, { ...mm, exclude, snapFix });
+        e.mapTouched = meshes.filter((m, k) => !touched || touched[k]);
+        this.setMappedRest(e, meshes, rest);
         if (e.mapped) { e.mapped.geometry.dispose(); e.mapped.geometry = geometry; }
         else {
           e.mapped = new THREE.Mesh(geometry, e.front.material); e.mapped.userData.sid = s.id;
@@ -734,11 +824,71 @@ export class Stage3D {
       }
       e.mapped.visible = s.visible !== false;
       e.group.visible = false;
-      for (const m of meshes) hidden.add(m);
+      if (e.mapRest) {   // outside the portion: the model's look (follows render mode / opacity / model visibility)
+        e.mapRest.visible = md.visible !== false;
+        e.mapRest.material = e.mapRestSrc.map((m) => (Array.isArray(m.material) ? m.material[0] : m.material));
+      }
+      for (const m of e.mapTouched || meshes) hidden.add(m);
     }
     this.mapDirty = false;
     // hide the source meshes that now carry a pixelmap, restore the others
-    for (const me of this.models.values()) for (const m of me.meshes || []) m.visible = !hidden.has(m);
+    // the source meshes that now carry a pixelmap are left out of the model's display proxy
+    for (const me of this.models.values()) {
+      const key = (me.meshes || []).map((m, i) => (hidden.has(m) ? i : -1)).filter((i) => i >= 0).join(',');
+      if (me.mappedKey !== key) { me.mappedKey = key; me.mapped = new Set((me.meshes || []).filter((m) => hidden.has(m))); me.proxyDirty = true; }
+    }
+  }
+
+  /** Parts of the mapped meshes outside the screen's portion, one draw group per source material. The source
+   *  attributes (texture coordinates, vertex colours) are interpolated from the barycentric weights of each piece:
+   *  without them a textured / vertex-coloured material drew the free part black or transparent (it "vanished"). */
+  setMappedRest(e, meshes, rest) {
+    if (e.mapRest) { this.scene.remove(e.mapRest); e.mapRest.geometry.dispose(); e.mapRest = null; e.mapRestSrc = null; }
+    if (!rest || !rest.size) return;
+    const bary = rest.bary || new Map();
+    const byMat = new Map();
+    for (const [k, arr] of rest) {
+      const m = meshes[k]; if (!m) continue;
+      const mat = Array.isArray(m.material) ? m.material[0] : m.material;
+      let g = byMat.get(mat); if (!g) byMat.set(mat, g = { src: m, parts: [] });
+      g.parts.push({ k, arr, ba: bary.get(k) || null });
+    }
+    // attributes worth carrying: those every source mesh of the rest has (uv, uv1, color)
+    const names = ['uv', 'uv1', 'color'].filter((nm) => [...rest.keys()].every((k) => meshes[k] && meshes[k].geometry.getAttribute(nm)));
+    const n = [...byMat.values()].reduce((a, g) => a + g.parts.reduce((b, x) => b + x.arr.length, 0), 0);
+    const nv = n / 3;
+    const pos = new Float32Array(n);
+    const att = names.map((nm) => { const sz = meshes[[...rest.keys()][0]].geometry.getAttribute(nm).itemSize; return { nm, sz, a: new Float32Array(nv * sz) }; });
+    const geo = new THREE.BufferGeometry();
+    let o = 0, gi = 0; const src = [];
+    for (const g of byMat.values()) {
+      const start = o / 3;
+      for (const x of g.parts) {
+        pos.set(x.arr, o);
+        if (att.length && x.ba) {
+          const G = meshes[x.k].geometry, I = G.index;
+          const A = att.map((q) => G.getAttribute(q.nm));
+          const cnt = x.arr.length / 3;
+          for (let v = 0; v < cnt; v++) {
+            const lt = x.ba[v * 4], w = [x.ba[v * 4 + 1], x.ba[v * 4 + 2], x.ba[v * 4 + 3]];
+            const vi = [0, 1, 2].map((j) => (I ? I.getX(lt * 3 + j) : lt * 3 + j));
+            const dst = o / 3 + v;
+            att.forEach((q, ai) => {
+              const S = A[ai];
+              for (let c = 0; c < q.sz; c++) { let val = 0; for (let j = 0; j < 3; j++) val += w[j] * S.getComponent(vi[j], c); q.a[dst * q.sz + c] = val; }
+            });
+          }
+        }
+        o += x.arr.length;
+      }
+      geo.addGroup(start, o / 3 - start, gi++); src.push(g.src);
+    }
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    for (const q of att) geo.setAttribute(q.nm, new THREE.BufferAttribute(q.a, q.sz));
+    geo.computeVertexNormals(); geo.computeBoundingSphere(); geo.computeBoundingBox();
+    e.mapRest = new THREE.Mesh(geo, src.map((m) => (Array.isArray(m.material) ? m.material[0] : m.material)));
+    e.mapRest.name = 'p2p-map-rest'; e.mapRestSrc = src;
+    this.scene.add(e.mapRest);
   }
 
   /** Every mesh of the loaded models (for pick lists and name matching). */
@@ -778,19 +928,34 @@ export class Stage3D {
     const s0 = this.meshInfo(modelId, seed);
     if (!s0 || !s0.thin) return [seed];          // not a panel (whole object already): don't grow into the structure
     const tol = Math.max(0.03, s0.diag * 0.05);
-    const N = me.meshes.length;
-    const info = new Array(N);
-    const get = (i) => (info[i] ??= this.meshInfo(modelId, i));
+    const N = me.meshes.length, maxDiag = s0.diag * 3;
+    me.holder.updateMatrixWorld(true);
+    // cheap world boxes (geometry bounds × matrix) for every candidate, in a uniform grid: venues have thousands of
+    // meshes (seats…), comparing each one with each other froze the app
+    const cell = Math.max(0.05, maxDiag), grid = new Map(), boxes = new Array(N);
+    const keyOf = (x, y, z) => x + ',' + y + ',' + z;
+    for (let j = 0; j < N; j++) {
+      const m = me.meshes[j]; if (!m || !m.geometry) continue;
+      if (!m.geometry.boundingBox) m.geometry.computeBoundingBox();
+      const b = m.geometry.boundingBox.clone().applyMatrix4(m.matrixWorld);
+      if (b.isEmpty() || b.getSize(new THREE.Vector3()).length() > maxDiag) continue;
+      boxes[j] = b;
+      const x0 = Math.floor(b.min.x / cell), x1 = Math.floor(b.max.x / cell), y0 = Math.floor(b.min.y / cell), y1 = Math.floor(b.max.y / cell), z0 = Math.floor(b.min.z / cell), z1 = Math.floor(b.max.z / cell);
+      for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) for (let z = z0; z <= z1; z++) { const k = keyOf(x, y, z); let l = grid.get(k); if (!l) grid.set(k, l = []); l.push(j); }
+    }
     const seen = new Set([seed]), queue = [seed];
-    while (queue.length && seen.size < 5000) {
-      const i = queue.shift(), a = get(i);
+    const t0 = performance.now();
+    while (queue.length && seen.size < 5000 && performance.now() - t0 < 1500) {
+      const i = queue.shift(), a = this.meshInfo(modelId, i);
       const grown = a.box.clone().expandByScalar(tol);
-      for (let j = 0; j < N; j++) {
-        if (seen.has(j)) continue;
-        const b = get(j);
-        if (!b || !b.thin || b.diag > s0.diag * 3) continue;
-        if (!grown.intersectsBox(b.box)) continue;
-        if (Math.abs(a.n.dot(b.n)) < 0.77) continue;        // > ~40° between neighbours: another surface
+      const near = new Set();
+      const x0 = Math.floor(grown.min.x / cell), x1 = Math.floor(grown.max.x / cell), y0 = Math.floor(grown.min.y / cell), y1 = Math.floor(grown.max.y / cell), z0 = Math.floor(grown.min.z / cell), z1 = Math.floor(grown.max.z / cell);
+      for (let x = x0; x <= x1; x++) for (let y = y0; y <= y1; y++) for (let z = z0; z <= z1; z++) for (const j of grid.get(keyOf(x, y, z)) || []) near.add(j);
+      for (const j of near) {
+        if (seen.has(j) || !grown.intersectsBox(boxes[j])) continue;
+        const bj = this.meshInfo(modelId, j);   // exact shape only for the close candidates
+        if (!bj || !bj.thin || bj.diag > maxDiag) continue;
+        if (Math.abs(a.n.dot(bj.n)) < 0.77) continue;        // > ~40° between neighbours: another surface
         seen.add(j); queue.push(j);
       }
     }
@@ -810,16 +975,53 @@ export class Stage3D {
   }
 
   /** Next click on a model mesh calls cb({ model, index, name }) (null on cancel). */
-  startMeshPick(cb) { this.meshPick = cb; this.canvas.style.cursor = 'crosshair'; }
-  cancelMeshPick() { if (this.meshPick) { const cb = this.meshPick; this.meshPick = null; this.canvas.style.cursor = ''; cb(null); } }
+  startMeshPick(cb) {
+    this.meshPick = cb; this.canvas.style.cursor = 'crosshair';
+    // the gizmo of the selected screen would catch the click (it often sits right on the object to map)
+    this.pickGizmo = this.gizmo.object || null; if (this.pickGizmo) this.gizmo.detach();
+    this.gizmoHelper.visible = false;
+  }
+  endMeshPick() {
+    this.meshPick = null; this.canvas.style.cursor = ''; if (this.pickBox) this.pickBox.visible = false; this.canvas.title = '';
+    this.pickGizmo = null; this.gizmoHelper.visible = !this.presentation; this.syncSelection();
+  }
+  cancelMeshPick() { if (this.meshPick) { const cb = this.meshPick; this.endMeshPick(); cb(null); } }
   pickMesh(e) {
     const r = this.canvas.getBoundingClientRect();
     const v = new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
-    this.ray.setFromCamera(v, this.camera);
+    this.camera.updateMatrixWorld(); this.ray.setFromCamera(v, this.camera);
+    // every mesh actually shown (hidden elements, hidden models and empty draw ranges are skipped)
     const list = [];
-    for (const me of this.models.values()) if (me.holder.visible) for (const m of me.meshes || []) list.push(m);
-    const hit = this.ray.intersectObjects(list, false)[0];
-    return hit ? { model: hit.object.userData.mid, index: hit.object.userData.mindex, name: hit.object.name || (hit.object.parent && hit.object.parent.name) || '' } : null;
+    const shown = (o) => { for (let x = o; x; x = x.parent) { if (x.userData.p2pModelRoot) return true; if (!x.visible) return false; } return true; };
+    for (const me of this.models.values()) {
+      if (!me.holder.visible) continue;
+      me.holder.updateMatrixWorld(true);
+      for (const m of me.meshes || []) if (shown(m) && !(m.geometry && m.geometry.drawRange && m.geometry.drawRange.count === 0)) list.push(m);
+    }
+    const hit = pickFirst(this.ray.ray, list);   // BVH per geometry, nearest mesh first (heavy venues stay responsive)
+    return hit ? { model: hit.object.userData.mid, index: hit.object.userData.mindex, name: hit.object.name || (hit.object.parent && hit.object.parent.name) || '', object: hit.object, shift: !!(e.shiftKey || e.metaKey || e.ctrlKey) } : null;
+  }
+  /** Meshes chosen in a multi-selection (outlined in cyan); [] clears. Beyond 400 meshes: one box around them. */
+  setMeshMarks(modelId, indices) {
+    if (!this.markRoot) { this.markRoot = new THREE.Group(); this.markRoot.renderOrder = 11; this.scene.add(this.markRoot); }
+    for (const c of [...this.markRoot.children]) { this.markRoot.remove(c); c.geometry.dispose(); c.material.dispose(); }
+    const me = modelId ? this.models.get(modelId) : null;
+    if (!me || !me.meshes || !indices || !indices.length) { this.requestRender && this.requestRender(); return; }
+    me.holder.updateMatrixWorld(true);
+    const boxes = indices.map((i) => me.meshes[i]).filter(Boolean).map((m) => new THREE.Box3().setFromObject(m));
+    const list = boxes.length > 400 ? [boxes.reduce((a, b) => a.union(b), new THREE.Box3())] : boxes;
+    for (const b of list) { const hb = new THREE.Box3Helper(b, 0x4dd8ff); hb.material.depthTest = false; hb.renderOrder = 11; this.markRoot.add(hb); }
+  }
+  /** Pick mode: outline of the model part under the mouse (what a click would map). */
+  hoverMesh(e) {
+    const now = performance.now();
+    if (this._hoverT && now - this._hoverT < 60) return;
+    this._hoverT = now;
+    const hit = this.pickMesh(e);
+    if (!this.pickBox) { this.pickBox = new THREE.Box3Helper(new THREE.Box3(), 0x3ddc97); this.pickBox.material.depthTest = false; this.pickBox.renderOrder = 12; this.scene.add(this.pickBox); }
+    if (!hit) { this.pickBox.visible = false; this.canvas.title = ''; return; }
+    this.pickBox.box.setFromObject(hit.object); this.pickBox.visible = true;
+    this.canvas.title = hit.name || '';
   }
 
   /** Dashed path of every rail on the floor; highlighted when one of its screens is selected. */
@@ -864,7 +1066,7 @@ export class Stage3D {
     sg.setIndex(g.shellIdx); sg.computeVertexNormals();
     e.back.geometry = sg;
     const og = new THREE.BufferGeometry(); og.setAttribute('position', new THREE.Float32BufferAttribute(g.outline, 3));
-    e.outline.geometry.dispose(); e.outline.geometry = og;
+    e.outline.geometry.dispose(); e.outline.geometry = og; if (e.tline) e.tline.geometry = og;
     e.meters = g.meters;
   }
 
@@ -879,15 +1081,30 @@ export class Stage3D {
       if (!e || s.visible === false) continue;
       const bm = R.surfaceBitmap(p, s);
       const st = M.effStyle(p, s);
-      const decoKey = bm.key + '|' + R.logoVer + '|' + JSON.stringify([st.labelShape, st.showName, st.showSize, st.sizeFormat, st.showPhysical, st.labelPerSlice, st.labelScale, st.labelMax, st.fontFamily, st.textColor, st.textStroke, st.shapeFill, st.shapeOpacity, st.pillColor, st.logoSlots, st.textSlots, p.name, s.group, (p.logos || []).map((l) => l.id), st.anim && st.anim.enabled]);
-      const animated = animOn && st.anim && st.anim.enabled;
+      const decoKey = bm.key + '|' + R.logoVer + '|' + JSON.stringify([st.labelShape, st.showName, st.showSize, st.sizeFormat, st.showPhysical, st.labelPerSlice, st.labelScale, st.labelMax, st.fontFamily, st.textColor, st.textStroke, st.shapeFill, st.shapeOpacity, st.pillColor, st.logoSlots, st.textSlots, p.name, s.group, (p.logos || []).map((l) => l.id)]);
+      const animated = !!(animOn && st.anim && st.anim.enabled && R.drawAnimOnly);
+      if (e.animU) {
+        e.animU.animOn.value = animated ? 1 : 0;
+        if (animated && (force || !e.animT || performance.now() - e.animT > 33)) {
+          e.animT = performance.now();
+          const ka = Math.min(1, 640 / Math.max(s.w, s.h));
+          const aw = Math.max(2, Math.round(s.w * ka)), ah = Math.max(2, Math.round(s.h * ka));
+          const ac = e.animCanvas;
+          if (ac.width !== aw || ac.height !== ah) { ac.width = aw; ac.height = ah; e.animTex.dispose(); }
+          const actx = ac.getContext('2d');
+          actx.setTransform(1, 0, 0, 1, 0, 0); actx.clearRect(0, 0, aw, ah);
+          actx.setTransform(aw / s.w, 0, 0, ah / s.h, 0, 0);
+          R.drawAnimOnly(actx, s, st, t, p);
+          e.animTex.needsUpdate = true;
+        }
+      }
       // live video source: a device feeding the whole composition (each screen shows its Input Selection) or one screen directly
       const vcfg = p.stage.video || {};
       const live = liveSourceOf(p, s);
       if (live && (live.key.startsWith('ndi:') || !vcfg.overlay)) { e.key = null; continue; }   // GPU path (updateLive): no CPU copy
       let video = null, vmode = null;
       if (live && this.h.getVideo) { video = this.h.getVideo(live.key.slice(4)); vmode = live.mode; }
-      if (!video && !force && !animated && decoKey === e.key) continue;
+      if (!video && !force && decoKey === e.key) continue;   // the animation lives on the overlay layer
       e.key = video ? null : decoKey;
       const c = e.texCanvas;
       if (c.width !== bm.canvas.width || c.height !== bm.canvas.height) { c.width = bm.canvas.width; c.height = bm.canvas.height; e.tex.dispose(); }
@@ -911,7 +1128,7 @@ export class Stage3D {
       } else {
         ctx.drawImage(bm.canvas, 0, 0);
         ctx.setTransform(bm.k, 0, 0, bm.k, 0, 0);
-        R.decorate(ctx, s, st, { x: 0, y: 0, w: s.w, h: s.h }, t, p);
+        R.decorate(ctx, s, R.drawAnimOnly ? { ...st, anim: { ...st.anim, enabled: false } } : st, { x: 0, y: 0, w: s.w, h: s.h }, t, p);
       }
       e.tex.needsUpdate = true;
     }
@@ -1024,23 +1241,29 @@ export class Stage3D {
       e.holder.rotation.set(md.rx * D2R, md.ry * D2R, md.rz * D2R, EULER);
       e.holder.scale.setScalar(k);
       e.holder.visible = md.visible !== false;
-      const look = JSON.stringify([md.opacity, md.color, !!md.receive]);
-      if (e.obj && e.look !== look) { e.look = look; this.applyLook(e.obj, md); }
+      const look = JSON.stringify([md.opacity, md.color, !!md.receive, md.render || 'auto']);
+      if (e.obj && e.look !== look) { e.look = look; this.applyLook(e.obj, md); e.proxyDirty = true; }
       e.receive = !!md.receive;
+      const hk = JSON.stringify(md.hidden || []);
+      if (e.obj && e.parser && e.hiddenKey !== hk) { e.hiddenKey = hk; applyHidden(e.parser, e.nodeObj, md.hidden || [], e.hideState || (e.hideState = {})); e.proxyDirty = true; }
     }
     for (const [id, e] of this.models) if (!seen.has(id)) { this.modelRoot.remove(e.holder); this.models.delete(id); }
   }
 
   loadModel(e, md) {
-    e.holder.clear(); e.obj = null; e.look = null;
+    disposeProxy(e.proxy); e.proxy = null;
+    e.holder.clear(); e.obj = null; e.look = null; e.parser = null; e.nodeObj = null; e.hideState = {}; e.hiddenKey = null;
     if (!md.data) return;
-    const done = (obj) => {
+    const done = (obj, parser = null) => {
       if (!this.models.has(md.id) || this.models.get(md.id) !== e) return;
       e.obj = obj; e.holder.add(obj);
+      if (parser) { e.parser = { associations: parser.associations }; e.nodeObj = nodeObjects(parser); parser = e.parser; const cur0 = this.h.getProject().stage.models.find((x) => x.id === md.id) || md; e.hiddenKey = JSON.stringify(cur0.hidden || []); applyHidden(parser, e.nodeObj, cur0.hidden || [], e.hideState); }
       e.meshes = []; obj.traverse((o) => { if (o.isMesh) { o.userData.mid = md.id; o.userData.mindex = e.meshes.length; e.meshes.push(o); } });
       this.mapDirty = true; if (this.projLayer) this.projLayer.dirty = true;
       const cur = this.h.getProject().stage.models.find((x) => x.id === md.id) || md;
-      e.look = JSON.stringify([cur.opacity, cur.color, !!cur.receive]); this.applyLook(obj, cur); e.receive = !!cur.receive;
+      { let tris = 0; for (const m of e.meshes) { const g = m.geometry; tris += g ? (g.index ? g.index.count : (g.attributes.position ? g.attributes.position.count : 0)) / 3 : 0; } e.tris = Math.round(tris); }
+      e.look = JSON.stringify([cur.opacity, cur.color, !!cur.receive, cur.render || 'auto']); this.applyLook(obj, cur); e.receive = !!cur.receive;
+      obj.userData.p2pModelRoot = true; e.proxyDirty = true;
       if (this.h.onModelLoaded) this.h.onModelLoaded(md.id, new THREE.Box3().setFromObject(obj));
       if (this.active) this.sync();
     };
@@ -1050,26 +1273,78 @@ export class Stage3D {
       if (!this.models.has(md.id) || this.models.get(md.id) !== e) return;
       try {
         if (md.kind === 'obj') done(new OBJLoader().parse(new TextDecoder().decode(buf)));   // projects ≤ 1.13 (OBJ text stored as is)
-        else new GLTFLoader().parse(buf, '', (gl) => done(gl.scene), fail);
+        else new GLTFLoader().parse(buf, '', (gl) => done(gl.scene, gl.parser), fail);
       } catch (err) { fail(err); }
     }).catch(fail);
   }
 
+  /** Display proxies of the loaded models (instancing + merge): one rebuild per change, before the frame. */
+  updateProxies() {
+    for (const e of this.models.values()) {
+      if (!e.proxyDirty || !e.obj || !e.meshes) continue;
+      e.proxyDirty = false;
+      disposeProxy(e.proxy); e.proxy = null;
+      const mapped = e.mapped || new Set();
+      const root = e.obj;
+      const shown = (m) => {
+        if (mapped.has(m)) return false;
+        if (m.geometry && m.geometry.drawRange && m.geometry.drawRange.count === 0) return false;
+        for (let x = m; x && x !== root; x = x.parent) if (!x.visible) return false;
+        return true;
+      };
+      root.visible = true;
+      const t0 = performance.now();
+      for (const m of e.mapHidden || []) m.visible = true; e.mapHidden = null;   // proxy path: mapped meshes are left out of it instead
+      try { e.proxy = buildProxy(e.holder, e.meshes, shown); } catch (err) { console.warn('model proxy', err); e.proxy = null; }
+      if (e.proxy && e.proxy.source > 1) {
+        e.holder.add(e.proxy.group);
+        root.visible = false;                  // originals: picking / mapping only
+        const shared = new Set(); for (const c of e.proxy.group.children) shared.add(c.geometry);
+        for (const m of e.meshes) if (m.geometry && !shared.has(m.geometry)) m.geometry.dispatchEvent({ type: 'dispose' });   // GPU buffers freed, data kept
+        e.proxyStats = { source: e.proxy.source, calls: e.proxy.calls, ms: Math.round(performance.now() - t0) };
+        this.syncCount = (this.syncCount || 0) + 1;
+      } else {
+        disposeProxy(e.proxy); e.proxy = null;   // small model: drawn as is
+        // mapped source meshes hidden as before (the ones no longer mapped come back)
+        for (const m of e.mapHidden || []) if (!mapped.has(m)) m.visible = true;
+        for (const m of mapped) m.visible = false;
+        e.mapHidden = new Set(mapped);
+      }
+    }
+  }
+
   applyLook(obj, md) {
     const op = Math.max(0.05, Math.min(1, md.opacity ?? 1));
+    // one look material per source material (shared by every mesh using it): thousands of meshes keep a handful of
+    // materials, so the display proxy can instance / merge them (one clone per mesh made every mesh unique)
+    const memo = new Map(), dropped = new Set();
+    const me = [...this.models.values()].find((x) => x.obj === obj);
+    const light = md.render === 'light' || (md.render !== 'full' && me && ((me.tris || 0) > 300000 || (me.meshes || []).length > 1500));
+    if (me) me.light = light;
     obj.traverse((o) => {
       if (!o.isMesh) return;
       if (!o.userData.origMat) o.userData.origMat = o.material;
       const base = Array.isArray(o.userData.origMat) ? o.userData.origMat : [o.userData.origMat];
-      if (Array.isArray(o.userData.lookMats)) o.userData.lookMats.forEach((m) => this.projLayer.dropMaterial(m));
+      if (Array.isArray(o.userData.lookMats)) o.userData.lookMats.forEach((m) => { if (!dropped.has(m)) { dropped.add(m); this.projLayer.dropMaterial(m); } });
       const mats = base.map((m0) => {
+        const key = md.receive ? 'rcv|' + (md.color || (m0.color ? m0.color.getHexString() : 'd0d0d0')) : md.color ? 'flat' : m0.uuid;
+        if (memo.has(key)) return memo.get(key);
+        let m;
         if (md.receive) {
           // receives projection: its own colour (or the model's) lit by the projectors
           const c = md.color || (m0.color ? '#' + m0.color.getHexString() : '#d0d0d0');
-          return this.projLayer.receiverMaterial({ color: c, gain: 1, opacity: op });
+          m = this.projLayer.receiverMaterial({ color: c, gain: 1, opacity: op });
+        } else {
+          if (light) {
+            // light display: Lambert shading (ignores the 24 LED-spill area lights, the main per-pixel cost on a big model)
+            m = new THREE.MeshLambertMaterial({ color: md.color || (m0.color ? m0.color.clone() : 0xd0d0d0), map: md.color ? null : m0.map || null, vertexColors: !!m0.vertexColors });
+            const tr = op < 1 || (!md.color && (m0.transparent || m0.opacity < 1));
+            if (tr) { m.transparent = true; m.opacity = op < 1 ? op : m0.opacity; m.depthWrite = false; }
+            m.side = THREE.DoubleSide;
+          } else m = md.color ? new THREE.MeshStandardMaterial({ color: md.color, roughness: 0.85 }) : m0.clone();
+          m.transparent = op < 1 || !!(m0.transparent && !md.color); m.opacity = op < 1 ? op : (md.color ? 1 : m0.opacity); m.depthWrite = !m.transparent; m.side = THREE.DoubleSide;
         }
-        const m = md.color ? new THREE.MeshStandardMaterial({ color: md.color, roughness: 0.85 }) : m0.clone();
-        m.transparent = op < 1; m.opacity = op; m.depthWrite = op >= 1; m.side = THREE.DoubleSide;
+        memo.set(key, m);
         return m;
       });
       o.userData.lookMats = mats;
@@ -1110,6 +1385,10 @@ export class Stage3D {
   }
 
   syncSelection() {
+    this.syncSelection0();
+    if (this.meshPick) { this.gizmo.detach(); this.gizmoHelper.visible = false; }   // picking a model face: no gizmo in the way
+  }
+  syncSelection0() {
     const psSel = this.h.getPersonSel ? this.h.getPersonSel() : null;
     for (const [id, e] of this.people) e.outline.visible = !this.presentation && id === psSel;
     const pse = psSel ? this.people.get(psSel) : null;
@@ -1124,7 +1403,7 @@ export class Stage3D {
     }
     this.gizmo.showY = true;
     const pjSel = this.h.getProjSel ? this.h.getProjSel() : null;
-    this.projLayer.setSelected(pjSel, this.presentation);
+    this.projLayer.setSelected(pjSel, this.presentation, this.h.getProjSels ? this.h.getProjSels() : null);
     const pje = pjSel ? this.projLayer.items.get(pjSel) : null;
     if (pje && !this.presentation && this.tool !== 'none') {
       for (const e of this.screens.values()) { e.outline.visible = false; if (e.mappedBox) e.mappedBox.visible = false; }
@@ -1155,7 +1434,11 @@ export class Stage3D {
     // pivot at the centre of the selection, oriented like the screen when only one
     const box = new THREE.Box3();
     for (const id of ids) box.expandByObject(this.screens.get(id).group);
-    const c = ids.length === 1 ? this.screens.get(ids[0]).group.position.clone() : box.getCenter(new THREE.Vector3());
+    let c = ids.length === 1 ? this.screens.get(ids[0]).group.position.clone() : box.getCenter(new THREE.Vector3());
+    if (ids.length === 1) {          // single screen: the handle sits on its anchor point (centre or a corner) and turns around it
+      const p = this.h.getProject(), s = M.getSurface(p, ids[0]);
+      if (s && s.stage.anchor && s.stage.anchor !== 'c') { const o = M.anchorOffset(p, s); c = c.add(new THREE.Vector3(o[0], o[1], o[2])); }
+    }
     this.pivot.position.copy(c);
     this.pivot.rotation.copy(ids.length === 1 ? this.screens.get(ids[0]).group.rotation : new THREE.Euler());
     this.pivot.updateMatrixWorld();
@@ -1179,7 +1462,15 @@ export class Stage3D {
     this.ps0 = null;
     const pjSel = this.h.getProjSel ? this.h.getProjSel() : null;
     const pje = pjSel ? this.projLayer.items.get(pjSel) : null;
-    if (pje) { pje.group.updateMatrixWorld(true); this.pj0 = { id: pjSel, inv: this.pivot.matrixWorld.clone().invert(), m: pje.group.matrixWorld.clone() }; this.r0 = null; this.g0 = null; return; }
+    if (pje) {
+      pje.group.updateMatrixWorld(true);
+      // several projectors selected: the others follow the primary's translation
+      const p = this.h.getProject();
+      const others = (this.h.getProjSels ? this.h.getProjSels() : []).filter((id) => id !== pjSel).map((id) => (p.projectors || []).find((x) => x.id === id)).filter(Boolean).map((x) => ({ id: x.id, x: x.x, y: x.y, z: x.z }));
+      const p0 = (p.projectors || []).find((x) => x.id === pjSel);
+      this.pj0 = { id: pjSel, inv: this.pivot.matrixWorld.clone().invert(), m: pje.group.matrixWorld.clone(), others, start: p0 ? { x: p0.x, y: p0.y, z: p0.z } : null };
+      this.r0 = null; this.g0 = null; return;
+    }
     this.pj0 = null;
     const rail = this.railOfSelection();
     if (rail) {
@@ -1188,7 +1479,14 @@ export class Stage3D {
       this.g0 = null; return;
     }
     this.r0 = null;
-    this.g0 = { inv: this.pivot.matrixWorld.clone().invert(), items: this.selectedIds().map((id) => ({ id, m: this.screens.get(id).group.matrixWorld.clone() })) };
+    const selIds = this.selectedIds();
+    this.g0 = { inv: this.pivot.matrixWorld.clone().invert(), items: selIds.map((id) => ({ id, m: this.screens.get(id).group.matrixWorld.clone() })) };
+    // snapping to the other screens: world boxes taken once at the start of the drag
+    const sel = new Set(selIds), box0 = new THREE.Box3();
+    for (const id of selIds) { const e = this.screens.get(id); if (e) box0.expandByObject(e.group); }
+    const others = [];
+    for (const [id, e] of this.screens) if (!sel.has(id) && e.group.visible) { const b = new THREE.Box3().setFromObject(e.group); if (!b.isEmpty()) others.push(b); }
+    this.g0.p0 = this.pivot.position.clone(); this.g0.box0 = box0; this.g0.others = others;
   }
   applyGizmo() {
     if (this.ps0) {
@@ -1209,7 +1507,18 @@ export class Stage3D {
       const eu = new THREE.Euler().setFromQuaternion(q, EULER);
       const rd = (v) => Math.round(v / D2R * 100) / 100, rm = (v) => Math.round(v * 1000) / 1000;
       const id = this.pj0.id;
-      this.h.edit('proj-gizmo', (pp) => { const pj = (pp.projectors || []).find((x) => x.id === id); if (pj) Object.assign(pj, { x: rm(pos.x), y: rm(pos.y), z: rm(pos.z), rx: rd(eu.x), ry: rd(eu.y), rz: rd(eu.z) }); }, true);
+      this.h.edit('proj-gizmo', (pp) => { const pj = (pp.projectors || []).find((x) => x.id === id); if (pj && !pj.posLock) {
+        const moved = Math.abs(pj.x - rm(pos.x)) + Math.abs(pj.y - rm(pos.y)) + Math.abs(pj.z - rm(pos.z)) > 1e-4;
+        Object.assign(pj, { x: rm(pos.x), y: rm(pos.y), z: rm(pos.z), rx: rd(eu.x), ry: rd(eu.y), rz: rd(eu.z) });
+        if (moved && pj.follow && this.h.pjFollow) this.h.pjFollow(pp, pj);   // moved: back square to the screen, image in place
+        else if (!moved && pj.follow && this.h.pjFollowRotate) this.h.pjFollowRotate(pp, pj);   // turned: rotation kept, shift / zoom keep the image on its target
+        const st = this.pj0.start;
+        if (moved && st) for (const o of this.pj0.others || []) {
+          const q = (pp.projectors || []).find((x) => x.id === o.id); if (!q || q.posLock) continue;
+          Object.assign(q, { x: rm(o.x + rm(pos.x) - st.x), y: rm(o.y + rm(pos.y) - st.y), z: rm(o.z + rm(pos.z) - st.z) });
+          if (q.follow && this.h.pjFollow) this.h.pjFollow(pp, q);
+        }
+      } }, true);
       return;
     }
     if (this.r0) {
@@ -1225,6 +1534,7 @@ export class Stage3D {
       return;
     }
     if (!this.g0) return;
+    this.snapToScreens();
     this.pivot.updateMatrixWorld();
     const delta = this.pivot.matrixWorld.clone().multiply(this.g0.inv);
     const res = this.g0.items.map((it) => {
@@ -1238,7 +1548,74 @@ export class Stage3D {
     });
     this.h.edit('stage-gizmo', (pp) => { for (const { id, ...v } of res) { const s = M.getSurface(pp, id); if (s) Object.assign(s.stage, v, { placed: true }); } }, true);
   }
-  endGizmo() { this.g0 = null; this.r0 = null; this.pj0 = null; this.ps0 = null; this.h.commit(); }
+  endGizmo() { this.g0 = null; this.r0 = null; this.pj0 = null; this.ps0 = null; this.clearGuides(); this.h.commit(); }
+
+  // ------------------------------------------------------------------ snapping on the other screens (move tool)
+  clearGuides() { for (const c of [...this.snapGuides.children]) { this.snapGuides.remove(c); c.geometry.dispose(); } this.dirtyView = true; }
+  guide(a, b) {
+    const g = new THREE.BufferGeometry().setFromPoints([a, b]);
+    const l = new THREE.Line(g, this.snapMat); l.renderOrder = 999; l.frustumCulled = false; this.snapGuides.add(l);
+  }
+  /** While moving screens: snaps the selection box on the dragged axes to the other screens (edges and centres) and to
+   *  equal spacing (same gap as between two other screens, or centred between its two neighbours); pink guides. */
+  snapToScreens() {
+    this.clearGuides();
+    const g0 = this.g0;
+    if (!g0 || !g0.box0 || g0.box0.isEmpty() || this.tool !== 'translate' || !this.snap || this.altKey) return;
+    const axes = String(this.gizmo.axis || '').replace(/[^XYZ]/g, '').split('').filter((v, i, a) => a.indexOf(v) === i);
+    if (!axes.length || !g0.others.length) return;
+    const t = this.pivot.position.clone().sub(g0.p0);
+    const mb = g0.box0.clone().translate(t);
+    const thr = Math.min(0.3, Math.max(0.012, this.camera.position.distanceTo(this.pivot.position) * 0.012));
+    const K = { X: 'x', Y: 'y', Z: 'z' };
+    const ov = (a, b, k, slack = 0) => a.min[k] < b.max[k] + slack && b.min[k] < a.max[k] + slack;
+    for (const A of axes) {
+      const k = K[A], perp = ['x', 'y', 'z'].filter((q) => q !== k);
+      const mv = [mb.min[k], (mb.min[k] + mb.max[k]) / 2, mb.max[k]];
+      let best = null;
+      const consider = (d, kind, ref) => { if (Math.abs(d) < thr && (!best || Math.abs(d) < Math.abs(best.d) - 1e-9 || (Math.abs(d - best.d) < 1e-9 && kind === 'align' && best.kind !== 'align'))) best = { d, kind, ref }; };
+      // 1. alignment: edges and centres
+      for (const o of g0.others) {
+        const vs = [o.min[k], (o.min[k] + o.max[k]) / 2, o.max[k]];
+        for (const v of vs) for (const m of mv) consider(v - m, 'align', { o, v });
+      }
+      // 2. spacing, among the screens lined up with the selection (overlap on another axis)
+      const row = g0.others.filter((o) => perp.some((q) => ov(o, mb, q, thr)));
+      const sorted = row.slice().sort((a, b) => a.min[k] - b.min[k]);
+      const gaps = [];
+      for (let i = 0; i < sorted.length; i++) for (let j = i + 1; j < sorted.length; j++) {
+        const a = sorted[i], b = sorted[j]; const gap = b.min[k] - a.max[k];
+        if (gap > 0.005 && perp.some((q) => ov(a, b, q)) && !sorted.some((c) => c !== a && c !== b && c.min[k] >= a.max[k] - 1e-6 && c.max[k] <= b.min[k] + 1e-6)) gaps.push({ gap, a, b });
+      }
+      const mc = (mb.min[k] + mb.max[k]) / 2;
+      const L = row.filter((o) => o.max[k] <= mc).sort((a, b) => b.max[k] - a.max[k])[0];
+      const R = row.filter((o) => o.min[k] >= mc).sort((a, b) => a.min[k] - b.min[k])[0];
+      for (const gp of gaps) {
+        if (L) consider(L.max[k] + gp.gap - mb.min[k], 'gap', { side: 'L', n: L, gp });
+        if (R) consider(R.min[k] - gp.gap - mb.max[k], 'gap', { side: 'R', n: R, gp });
+      }
+      if (L && R && R.min[k] - L.max[k] > mb.max[k] - mb.min[k]) consider((L.max[k] + R.min[k]) / 2 - mc, 'mid', { L, R });
+      if (!best) continue;
+      this.pivot.position[k] += best.d; mb.min[k] += best.d; mb.max[k] += best.d;
+      // guides
+      const c = mb.getCenter(new THREE.Vector3());
+      const P = (base, kv) => { const v = base.clone(); v[k] = kv; return v; };
+      if (best.kind === 'align') {
+        const oc = best.ref.o.getCenter(new THREE.Vector3());
+        this.guide(P(c, best.ref.v), P(oc, best.ref.v));
+      } else {
+        const span = (lo, hi, at) => { const a = at.clone(), b = at.clone(); a[k] = lo; b[k] = hi; this.guide(a, b); };
+        if (best.kind === 'mid') { span(best.ref.L.max[k], mb.min[k], c); span(mb.max[k], best.ref.R.min[k], c); }
+        else {
+          if (best.ref.side === 'L') span(best.ref.n.max[k], mb.min[k], c); else span(mb.max[k], best.ref.n.min[k], c);
+          const gp = best.ref.gp, at = gp.a.getCenter(new THREE.Vector3()).add(gp.b.getCenter(new THREE.Vector3())).multiplyScalar(0.5);
+          span(gp.a.max[k], gp.b.min[k], at);
+        }
+      }
+    }
+    this.pivot.updateMatrixWorld();
+    this.dirtyView = true;
+  }
 
   /** Vertical offset that puts the lowest point of a screen on the floor (Y = 0). */
   floorDelta(id) {

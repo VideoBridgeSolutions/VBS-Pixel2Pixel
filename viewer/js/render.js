@@ -10,14 +10,15 @@
 // sampled at the slice Input Selection — no change needed in the compositor.
 
 import {
-  tileInfo, surfacePalette, sliceDims, getSurface, slicesOfOutput, sliceName,
+  tileInfo, surfacePalette, sliceDims, getSurface, slicesOfOutput, slicesOfSurface, sliceName, PROJ_PATTERNS,
   mix, shade, hueShift, rgba, clamp, toNum, physicalSize, formatFooter,
-  dataChain, powerChain, portLabels, PORT_COLORS, effStyle, portHeadroom, circuitStarts, circuitPhase,
+  dataChain, powerChain, portLabels, PORT_COLORS, effStyle, portHeadroom, circuitStarts, circuitNumbers, circuitPhase, chainGraph,
   COMP_PATTERNS, formatSurfaceText, liveSourceOf, gradExtent, gradGeometry, gradT, gradColor, gradStops, gradLineStops, surfaceToComp, slotLogo, COLOR_PRESETS, hexToRgb
 } from './model.js';
 
 const MAX_SIDE = 16384;
 const M_clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+import { surfaceWorld } from './geometry.js';
 const MAX_AREA = 120e6;
 
 /** Piece of a screen split by « Séparer en écran indépendant »: the test pattern continues over the original screen. */
@@ -90,7 +91,7 @@ export class Renderer {
     if (!this._appLogo) {
       const img = new Image();
       img.onload = () => { this._appLogoReady = true; this.onAssetReady(); };
-      img.src = new URL('../assets/logo-256.png', import.meta.url).href;
+      img.src = globalThis.__P2P_ASSET_LOGO || new URL('../assets/logo-256.png', import.meta.url).href;   // standalone presentation: inlined
       this._appLogo = img;
     }
     return this._appLogoReady ? this._appLogo : null;
@@ -157,9 +158,10 @@ export class Renderer {
   surfaceBitmap(p, s) {
     const st = effStyle(p, s);
     const styleKey = { ...st, anim: null, info: null, infoScale: null, infoColor: null, infoBg: null, footer: null, footerTemplate: null, footerScale: null, footerColor: null, footerCorner: null, footerLogo: null, footerLogoId: null };
-    const chainKey = (st.cabling || st.powerPath || st.numbering === 'port') ? [s.data, s.power, p.processor, p.power, p.cabling, portLabels(p, s), st.powerPath ? circuitStarts(p)[s.id] : 0] : null;
+    const chainKey = (st.cabling || st.powerPath || st.numbering === 'port') ? [s.data, s.power, p.processor, p.power, p.cabling, portLabels(p, s), st.powerPath ? circuitNumbers(p, s).map((x) => x.n) : 0] : null;
     const compKey = COMP_PATTERNS.includes(s.pattern) ? [p.gradient, s.comp, gradExtent(p)] : null;
-    const key = JSON.stringify([s.name, s.w, s.h, s.tile, s.pitch, s.pattern, s.colors, s.virtual, s.joint || null, { ...styleKey, logoSlots: null }, chainKey, compKey]);
+    const projKey = PROJ_PATTERNS.includes(s.pattern) ? projZonesKey(p, s) : null;   // projector rasters / blends drawn on the pattern
+    const key = JSON.stringify([s.name, s.w, s.h, s.tile, s.pitch, s.pattern, s.colors, s.virtual, s.joint || null, { ...styleKey, logoSlots: null }, chainKey, compKey, projKey]);
     const hit = this.cache.get(s.id);
     if (hit && hit.key === key) return hit;
 
@@ -252,7 +254,7 @@ export class Renderer {
     if (compLive) { ctx.save(); ctx.globalAlpha = 0.28; ctx.imageSmoothingEnabled = true; ctx.drawImage(compLive.img, 0, 0, p.composition.w, p.composition.h); ctx.restore(); }
     const overlay = !!(p.stage.video && p.stage.video.overlay);
     for (const s of p.surfaces) {
-      if (s.visible === false) continue;
+      if (s.visible === false || (opts.only && !opts.only.has(s.id))) continue;
       const lv = this.liveOf(p, s, opts);
       const b = compBox(s);
       ctx.save();
@@ -266,6 +268,7 @@ export class Renderer {
       if (!lv || overlay) this.decorate(ctx, s, effStyle(p, s), { x: 0, y: 0, w: s.w, h: s.h }, t, p);
       ctx.restore();
     }
+    if (opts.jumpers !== false) drawJumpers(ctx, p);
     ctx.restore();
   }
 
@@ -277,6 +280,9 @@ export class Renderer {
     const st = effStyle(p, s);
     this.decorate(ctx, s, { ...st, anim: { ...st.anim, enabled: false } }, { x: 0, y: 0, w: s.w, h: s.h }, 0, p);
   }
+
+  /** The test animation alone (transparent elsewhere), in surface space: the 3D view draws it on a light overlay layer. */
+  drawAnimOnly(ctx, s, st, t, p) { if (st.anim && st.anim.enabled) drawAnim(ctx, s, st, t, p); }
 
   /** Label + logos + animation, in surface space. box = area the label/logos are placed in. */
   decorate(ctx, s, st, box, t, p) {
@@ -290,7 +296,7 @@ export class Renderer {
       if (p && Array.isArray(st.logoSlots)) for (const slot of st.logoSlots) { const img = this.slotImage(p, slot); if (img) drawLogoSlot(ctx, img, slot, box); }
       if (Array.isArray(st.textSlots)) for (const slot of st.textSlots) drawTextSlot(ctx, formatSurfaceText(slot.text, p, { ...s, name: J.name, w: J.W0, h: J.H0 }), slot, box, st);
       ctx.restore();
-      if (st.anim && st.anim.enabled) drawAnim(ctx, s, st, t);
+      if (st.anim && st.anim.enabled) drawAnim(ctx, s, st, t, p);
       return;
     }
     drawLabel(ctx, s, st, box);
@@ -299,7 +305,7 @@ export class Renderer {
       if (img) drawLogoSlot(ctx, img, slot, box);
     }
     if (Array.isArray(st.textSlots)) for (const slot of st.textSlots) drawTextSlot(ctx, formatSurfaceText(slot.text, p, s), slot, box, st);
-    if (st.anim && st.anim.enabled) drawAnim(ctx, s, st, t);
+    if (st.anim && st.anim.enabled) drawAnim(ctx, s, st, t, p);
   }
 }
 
@@ -540,6 +546,8 @@ function drawSmoothTiles(ctx, s, p, pal, ti, xs, ys, virt) {
 
 /** Draw a full surface pattern in its own pixel space (0..w, 0..h). */
 export function drawSurface(ctx, s, st, logoImg, p) {
+  if (st.mapOff && PROJ_PATTERNS.includes(s.pattern)) { ctx.fillStyle = '#000'; ctx.fillRect(0, 0, s.w, s.h); return; }   // display layer « Mire » off
+  if (PROJ_PATTERNS.includes(s.pattern)) { drawProjPattern(ctx, s, st, p); return; }   // projection screen: alignment patterns
   const W = s.w, H = s.h;
   const ti = tileInfo(s);
   const pal = surfacePalette(s);
@@ -553,7 +561,8 @@ export function drawSurface(ctx, s, st, logoImg, p) {
   const oc = J ? Math.round(J.ox / ti.tw) : 0, orr = J ? Math.round(J.oy / ti.th) : 0;
   const tiG = J ? { ...ti, cols: Math.max(ti.cols, Math.round(J.W0 / ti.tw)), rows: Math.max(ti.rows, Math.round(J.H0 / ti.th)) } : ti;
   // 1. tiles
-  if (s.pattern === 'compgrad' || s.pattern === 'soft') drawSmoothTiles(ctx, s, p, pal, ti, xs, ys, virt);
+  if (st.mapOff) { ctx.fillStyle = '#000'; ctx.fillRect(0, 0, W, H); }      // display layer « Mire » off: black screen, guides / cabling stay
+  else if (s.pattern === 'compgrad' || s.pattern === 'soft') drawSmoothTiles(ctx, s, p, pal, ti, xs, ys, virt);
   else for (let r = 0; r < ti.rows; r++) {
     for (let c = 0; c < ti.cols; c++) {
       const x0 = xs[c], x1 = xs[c + 1], y0 = ys[r], y1 = ys[r + 1];
@@ -561,7 +570,7 @@ export function drawSurface(ctx, s, st, logoImg, p) {
       ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
     }
   }
-  if (s.pattern === 'outline') {   // fine inner frame of every cabinet in the screen colour
+  if (s.pattern === 'outline' && !st.mapOff) {   // fine inner frame of every cabinet in the screen colour
     const ow = Math.max(1, Math.min(ti.tw, ti.th) * 0.035);
     ctx.save();
     ctx.strokeStyle = rgba(pal[0], 0.95); ctx.lineWidth = ow;
@@ -666,7 +675,7 @@ export function drawSurface(ctx, s, st, logoImg, p) {
       if (st.numbering === 'port' && p) {
         portMap = new Map();
         const labels = portLabels(p, s);
-        dataChain(s, p.processor).ports.forEach((port, k) => port.forEach((tl, i) => portMap.set(tl.c + ',' + tl.r, `${labels[k] ? labels[k].main : k + 1}.${i + 1}`)));
+        dataChain(s, p.processor).ports.forEach((port, k) => port.forEach((tl, i) => portMap.set(tl.c + ',' + tl.r, `${labels[k] ? labels[k].main : k + 1}.${i + 1 + ((labels[k] && labels[k].off) || 0)}`)));
       }
       for (let r = 0; r < ti.rows; r++) for (let c = 0; c < ti.cols; c++) {
         if (virt.has(c + ',' + r)) continue;
@@ -765,6 +774,55 @@ function drawGuides(ctx, st, ti, W, H, base, lw) {
 
 }
 
+/**
+ * Composition view: shared cables (a port / circuit running from one screen to the next) drawn as they really go — a
+ * dashed line from the last cabinet of a piece to the first cabinet of the next piece, in the cable's colour.
+ */
+function drawJumpers(ctx, p) {
+  const st = p.style || {};
+  const kinds = [st.cabling ? 'data' : null, st.powerPath ? 'power' : null].filter(Boolean);
+  for (const kind of kinds) {
+    const g = chainGraph(p, kind);
+    // segments cached per graph (same object while the cabling is unchanged) and screen placement
+    const links = [...g].filter(([, e]) => e.next);
+    if (!links.length) continue;
+    const posKey = links.map(([k, e]) => { const A = getSurface(p, k.split(':')[0]), B = getSurface(p, e.next.split(':')[0]); return A && B ? [A.comp.x, A.comp.y, A.comp.rot, A.comp.flip, A.w, A.h, B.comp.x, B.comp.y, B.comp.rot, B.comp.flip, B.w, B.h, A.visible, B.visible].join(',') : ''; }).join('|') + (st.cablingWidth || 1) + JSON.stringify([p.processor.portLabel, p.processor.redundancy, p.power.autoNumber]);
+    const memo = JUMP_CACHE.get(kind);
+    if (memo && memo.g === g && memo.posKey === posKey) { for (const sg of memo.segs) paintJumper(ctx, sg); continue; }
+    const segs = [];
+    for (const [key, e] of links) {
+      if (!e.next) continue;
+      const [sa, ka] = key.split(':'), [sb, kb] = e.next.split(':');
+      const A = getSurface(p, sa), B = getSurface(p, sb);
+      if (!A || !B || A.visible === false || B.visible === false) continue;
+      const chA = (kind === 'data' ? dataChain(A, p.processor).ports : powerChain(A, p.power, p.cabling).circuits)[+ka];
+      const chB = (kind === 'data' ? dataChain(B, p.processor).ports : powerChain(B, p.power, p.cabling).circuits)[+kb];
+      if (!chA || !chB || !chA.length || !chB.length) continue;
+      const tA = tileInfo(A), tB = tileInfo(B);
+      const cenOf = (s, ti, q) => surfaceToComp(s, Math.min(s.w, (q.c + 0.5) * ti.tw), Math.min(s.h, (q.r + 0.5) * ti.th));
+      const [x0, y0] = cenOf(A, tA, chA[chA.length - 1]), [x1, y1] = cenOf(B, tB, chB[0]);
+      let col;
+      if (kind === 'data') { const lb = portLabels(p, A)[+ka]; col = PORT_COLORS[((lb ? lb.g : 1) - 1) % PORT_COLORS.length]; }
+      else { const nb = circuitNumbers(p, A)[+ka]; col = PORT_COLORS[(PORT_COLORS.length - 1 - (((nb ? nb.n : 1) - 1) % PORT_COLORS.length))]; }
+      const tmin = Math.min(tA.tw, tA.th, tB.tw, tB.th), lw = Math.max(2, tmin * 0.06 * (st.cablingWidth || 1));
+      segs.push({ x0, y0, x1, y1, col, lw });
+    }
+    JUMP_CACHE.set(kind, { g, posKey, segs });
+    for (const sg of segs) paintJumper(ctx, sg);
+  }
+}
+const JUMP_CACHE = new Map();
+function paintJumper(ctx, { x0, y0, x1, y1, col, lw }) {
+  ctx.save();
+  ctx.strokeStyle = 'rgba(0,0,0,0.6)'; ctx.lineWidth = lw * 2.2; ctx.setLineDash([lw * 3, lw * 2]); ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+  ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.stroke(); ctx.setLineDash([]);
+  const a = Math.atan2(y1 - y0, x1 - x0), mx = (x0 + x1) / 2, my = (y0 + y1) / 2, sz = lw * 3.2;
+  ctx.fillStyle = col; ctx.beginPath(); ctx.moveTo(mx + Math.cos(a) * sz, my + Math.sin(a) * sz); ctx.lineTo(mx + Math.cos(a + 2.5) * sz, my + Math.sin(a + 2.5) * sz); ctx.lineTo(mx + Math.cos(a - 2.5) * sz, my + Math.sin(a - 2.5) * sz); ctx.closePath(); ctx.fill();
+  ctx.beginPath(); ctx.arc(x0, y0, lw * 1.4, 0, Math.PI * 2); ctx.arc(x1, y1, lw * 1.4, 0, Math.PI * 2); ctx.fill();
+  ctx.restore();
+}
+
 function drawChains(ctx, s, st, p, xs, ys, ti) {
   const W = s.w, H = s.h;
   const tmin = Math.min(ti.tw, ti.th);
@@ -795,6 +853,18 @@ function drawChains(ctx, s, st, p, xs, ys, ti) {
     ctx.fillStyle = '#000'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(text, x, y + fs * 0.04);
   };
+  /** Outlined tag (dark, coloured text): where a shared cable comes from / goes to, kept inside the screen. */
+  const ghost = (x, y, text, color, fs) => {
+    ctx.save();
+    ctx.font = `bold ${fs}px ${fam}`;
+    const w = ctx.measureText(text).width + fs * 0.8, h = fs * 1.4;
+    const cx = Math.min(W - w / 2 - 1, Math.max(w / 2 + 1, x)), cy = Math.min(H - h / 2 - 1, Math.max(h / 2 + 1, y));
+    ctx.fillStyle = 'rgba(0,0,0,0.82)'; roundRect(ctx, cx - w / 2, cy - h / 2, w, h, h * 0.25); ctx.fill();
+    ctx.setLineDash([fs * 0.3, fs * 0.2]); ctx.strokeStyle = color; ctx.lineWidth = Math.max(1, fs * 0.1); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle = color; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(text, cx, cy + fs * 0.04);
+    ctx.restore();
+  };
+  const short = (n) => { n = String(n || ''); return n.length > 16 ? n.slice(0, 15) + '…' : n; };
 
   ctx.save();
   ctx.lineJoin = 'round'; ctx.lineCap = 'round';
@@ -816,13 +886,17 @@ function drawChains(ctx, s, st, p, xs, ys, ti) {
         const [mx, my] = edgeOf(x, y);
         if (Math.hypot(mx - x, my - y) > 1) {
           ctx.save(); ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = lw * 1.3;
-          ctx.beginPath(); ctx.moveTo(mx, my); ctx.lineTo(x, y); ctx.stroke(); arrow(mx, my, x, y, lw * 2.6);
+          if (lb.cont) ctx.setLineDash([lw * 3, lw * 2]);   // the cable comes from another screen (shared port)
+          ctx.beginPath(); ctx.moveTo(mx, my); ctx.lineTo(x, y); ctx.stroke(); ctx.setLineDash([]); arrow(mx, my, x, y, lw * 2.6);
           ctx.restore();
         }
-        tag(x, y, lb.main, col, fs, true);
-        if (st.cablingUsage !== false) {
+        if (lb.cont) {   // piece of a cable that comes from another screen: outlined port name + where it comes from, at the edge
+          ghost(x, y, lb.main, col, fs * 0.9);
+          if (lb.fromName) ghost(mx + (x - mx) * 0.15, my + (y - my) * 0.15 + (Math.abs(my - y) < 1 ? -fs * 1.6 : 0), '← ' + short(lb.fromName), col, fs * 0.75);
+        } else tag(x, y, lb.main, col, fs, true);
+        if (st.cablingUsage !== false && !lb.cont) {
           // load of the port: small counter on its line, next to the second cabinet (or under the port tag)
-          const pct = Math.round(port.length * tilePx / Math.max(1, portPx) * 100);
+          const pct = Math.round((lb.total || port.length) * tilePx / Math.max(1, portPx) * 100);   // whole cable, all screens
           const [ux, uy] = port.length > 1 ? cen(port[1]) : [x, y + fs * 1.6];
           const txt = pct + '%', f2 = fs * 0.78;
           ctx.save();
@@ -854,6 +928,14 @@ function drawChains(ctx, s, st, p, xs, ys, ti) {
           ctx.fillStyle = col; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
           ctx.fillText(lb.backup, lx, ly + fs * 0.03);
           ctx.restore();
+        } else if (lb.next) {
+          // the cable goes on to another screen: dashed stub to the nearest edge, arrow outwards
+          const [nx, ny] = edgeOf(ex, ey);
+          ctx.save(); ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = lw * 1.3; ctx.setLineDash([lw * 3, lw * 2]);
+          ctx.beginPath(); ctx.moveTo(ex, ey); ctx.lineTo(nx, ny); ctx.stroke(); ctx.setLineDash([]);
+          if (Math.hypot(nx - ex, ny - ey) > 1) arrow(ex, ey, nx, ny, lw * 2.6);
+          ctx.restore();
+          if (st.cablingLabels && lb.toName) { const fs2 = Math.max(7, tmin * 0.2) * 0.75; ghost(nx + (ex - nx) * 0.15, ny + (ey - ny) * 0.15 + (Math.abs(ny - ey) < 1 ? fs2 * 2.1 : 0), '→ ' + short(lb.toName), col, fs2); }
         } else {
           ctx.fillStyle = col; ctx.fillRect(ex - lw * 1.6, ey - lw * 1.6, lw * 3.2, lw * 3.2);
         }
@@ -862,11 +944,12 @@ function drawChains(ctx, s, st, p, xs, ys, ti) {
   }
   if (st.powerPath) {
     const { circuits } = powerChain(s, p.power, p.cabling);
-    const start = circuitStarts(p)[s.id] || 1;
+    const nums = circuitNumbers(p, s);
     const off = tmin * 0.18;
     ctx.setLineDash([lw * 3, lw * 2]);
     circuits.forEach((cir, k) => {
-      const col = PORT_COLORS[(PORT_COLORS.length - 1 - ((k + start - 1) % PORT_COLORS.length))];
+      const nb = nums[k] || { n: k + 1 };
+      const col = PORT_COLORS[(PORT_COLORS.length - 1 - ((nb.n - 1) % PORT_COLORS.length))];
       ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = lw * 0.8;
       ctx.beginPath();
       cir.forEach((t, i) => { const [x, y] = cen(t); if (i) ctx.lineTo(x + off, y + off); else ctx.moveTo(x + off, y + off); });
@@ -874,8 +957,10 @@ function drawChains(ctx, s, st, p, xs, ys, ti) {
       if (st.cablingLabels && cir.length) {
         const [x, y] = cen(cir[0]);
         ctx.setLineDash([]);
-        const ph = circuitPhase(p.power, k + start);
-        tag(x + off, y + off, 'C' + (k + start) + (ph ? ' ' + ph : ''), col, Math.max(7, tmin * 0.17), false);
+        const ph = circuitPhase(p.power, nb.n, p);
+        if (nb.cont) { ghost(x + off, y + off, 'C' + nb.n + (ph ? ' ' + ph : ''), col, Math.max(7, tmin * 0.17)); if (nb.fromName) ghost(x + off, y + off + Math.max(7, tmin * 0.17) * 1.6, '← ' + short(nb.fromName), col, Math.max(7, tmin * 0.17) * 0.8); }
+        else tag(x + off, y + off, 'C' + nb.n + (ph ? ' ' + ph : ''), col, Math.max(7, tmin * 0.17), false);
+        if (nb.next && nb.toName && cir.length) { const [ex2, ey2] = cen(cir[cir.length - 1]); ghost(ex2 + off, ey2 + off + Math.max(7, tmin * 0.17) * 1.6, '→ ' + short(nb.toName), col, Math.max(7, tmin * 0.17) * 0.8); }
         ctx.setLineDash([lw * 3, lw * 2]);
       }
     });
@@ -1037,23 +1122,66 @@ function drawInfo(ctx, sl, name, st) {
 }
 
 /** Animated overlay, drawn in surface space (0..w, 0..h). */
-function drawAnim(ctx, s, st, t) {
+// ---------------------------------------------------------------- test animations
+// space 'screen': each screen runs the effect in its own frame (default).
+// space 'comp'  : the effect runs over the whole composition; each screen shows its Input Selection of it.
+// space 'stage' : the effect runs through the 3D stage in metres (planes moving across the bounding box of the screens);
+//                 each screen shows it where it really is (position, rotation, curve, rail, motorisation in progress).
+const ANIM_AXIS = { lr: [1, 0, 0], rl: [-1, 0, 0], bt: [0, 1, 0], tb: [0, -1, 0], bf: [0, 0, 1], fb: [0, 0, -1] };
+const dot3 = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+let stageBoundsCache = null;   // { p, t, list } — one computation per frame and project
+function stageWorlds(p, t) {
+  if (stageBoundsCache && stageBoundsCache.p === p && stageBoundsCache.t === t) return stageBoundsCache.list;
+  const list = new Map();
+  for (const x of p.surfaces || []) {
+    if (x.visible === false || !(x.stage && x.stage.placed)) continue;
+    try { const w = surfaceWorld(p, x); if (w) list.set(x.id, w); } catch (_) { /* skip */ }
+  }
+  stageBoundsCache = { p, t, list };
+  return list;
+}
+/** Extent of every placed screen along a unit axis (metres). */
+function stageExtent(list, ax) {
+  let lo = Infinity, hi = -Infinity;
+  for (const w of list.values()) for (const f of w.facets) for (const q of [f.p00, f.p10, f.p01, [f.p10[0] + f.p01[0] - f.p00[0], f.p10[1] + f.p01[1] - f.p00[1], f.p10[2] + f.p01[2] - f.p00[2]]]) { const d = dot3(q, ax); if (d < lo) lo = d; if (d > hi) hi = d; }
+  return lo < hi ? [lo, hi] : [0, 1];
+}
+/** Phase 0..1 of the effect at time t. */
+const animPhase = (a, t) => { const period = 4 / Math.max(0.05, toNum(a.speed, 1)); return (t % period) / period; };
+
+function drawAnim(ctx, s, st, t, p) {
   const a = st.anim;
-  const W = s.w, H = s.h;
+  const space = p && (a.space === 'comp' || a.space === 'stage') ? a.space : 'screen';
+  ctx.save();
+  if (space === 'stage' && !(s.stage && s.stage.placed)) { /* screen not in the 3D stage: nothing crosses it */ }
+  else if (space === 'stage' && a.type !== 'blink') drawAnimStage(ctx, s, a, t, p);
+  else if (space === 'comp') {
+    // surface → composition: translate(box centre) · rotate · flip · translate(−w/2, −h/2); draw in composition pixels
+    const b = compBox(s), r = b.rot * Math.PI / 180, c = Math.cos(r), sn = Math.sin(r), fx = s.comp.flip ? -1 : 1;
+    const m = new DOMMatrix([c * fx, sn * fx, -sn, c, b.x + b.w / 2, b.y + b.h / 2]).multiply(new DOMMatrix([1, 0, 0, 1, -s.w / 2, -s.h / 2]));
+    const inv = m.inverse();
+    ctx.transform(inv.a, inv.b, inv.c, inv.d, inv.e, inv.f);
+    drawAnimFlat(ctx, p.composition.w, p.composition.h, a, t);
+  } else drawAnimFlat(ctx, s.w, s.h, a, t);
+  ctx.restore();
+  if (a.counter) drawAnimCounter(ctx, s.w, s.h, a, t);
+}
+
+/** Effect in a flat frame W × H (a screen or the composition). */
+function drawAnimFlat(ctx, W, H, a, t) {
   const sp = Math.max(0.05, toNum(a.speed, 1));
   const col = a.color || '#fff';
-  ctx.save();
   if (a.type === 'scan') {
     // gradient band transparent -> white, leading edge in the travel direction
-    const period = 4 / sp;
-    const ph = (t % period) / period;
+    const ph = animPhase(a, t);
     const dir = a.dir || 'lr';
-    const horiz = dir === 'lr' || dir === 'rl';
+    const horiz = dir !== 'tb' && dir !== 'bt';
+    const back = dir === 'rl' || dir === 'bt';
     const L = horiz ? W : H;
     const bw = Math.max(8, L * M_clamp(a.width ?? 0.25, 0.02, 1));
     let lead = ph * (L + bw);                    // leading edge position along travel axis
-    if (dir === 'rl' || dir === 'bt') lead = L - lead;
-    const tail = (dir === 'rl' || dir === 'bt') ? lead + bw : lead - bw;
+    if (back) lead = L - lead;
+    const tail = back ? lead + bw : lead - bw;
     const g = horiz ? ctx.createLinearGradient(tail, 0, lead, 0) : ctx.createLinearGradient(0, tail, 0, lead);
     g.addColorStop(0, rgba(col, 0));
     g.addColorStop(0.85, rgba(col, 0.75));
@@ -1062,15 +1190,18 @@ function drawAnim(ctx, s, st, t) {
     const a0 = Math.min(tail, lead), a1 = Math.max(tail, lead);
     if (horiz) ctx.fillRect(a0, 0, a1 - a0, H); else ctx.fillRect(0, a0, W, a1 - a0);
   } else if (a.type === 'bar' || a.type === 'cross') {
-    const period = 4 / sp;
-    const ph = (t % period) / period;
-    const bw = Math.max(4, W * 0.012);
+    const ph = animPhase(a, t);
+    const vert = a.dir === 'tb' || a.dir === 'bt';
     ctx.fillStyle = rgba(col, 0.9);
-    const x = (a.dir === 'rl') ? W - ph * (W + bw) : ph * (W + bw) - bw;
-    ctx.fillRect(x, 0, bw, H);
-    if (a.type === 'cross') {
+    if (!vert || a.type === 'cross') {
+      const bw = Math.max(4, W * 0.012);
+      const x = (a.dir === 'rl') ? W - ph * (W + bw) : ph * (W + bw) - bw;
+      ctx.fillRect(x, 0, bw, H);
+    }
+    if (vert || a.type === 'cross') {
       const bh = Math.max(4, H * 0.012);
-      ctx.fillRect(0, ph * (H + bh) - bh, W, bh);
+      const y = (a.dir === 'bt') ? H - ph * (H + bh) : ph * (H + bh) - bh;
+      ctx.fillRect(0, y, W, bh);
     }
   } else if (a.type === 'sweep') {
     const ang = (t * sp * Math.PI * 2 / 4) % (Math.PI * 2);
@@ -1089,19 +1220,226 @@ function drawAnim(ctx, s, st, t) {
     if (on) { ctx.fillRect(0, 0, m, m); ctx.fillRect(W - m, H - m, m, m); }
     else { ctx.fillRect(W - m, 0, m, m); ctx.fillRect(0, H - m, m, m); }
   }
-  if (a.counter) {
-    const total = Math.max(0, t);
-    const mm = Math.floor(total / 60) % 60, ss = Math.floor(total) % 60, ff = Math.floor((total % 1) * 100);
-    const txt = `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}:${String(ff).padStart(2, '0')}`;
-    const fs = Math.min(H * 0.14, W * 0.1);
-    if (fs >= 8) {
-      ctx.font = `bold ${fs}px "Courier New", Menlo, monospace`;
-      ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
-      ctx.lineWidth = fs * 0.12; ctx.strokeStyle = '#000'; ctx.lineJoin = 'round';
-      ctx.strokeText(txt, W / 2, H - fs * 0.25);
-      ctx.fillStyle = col;
-      ctx.fillText(txt, W / 2, H - fs * 0.25);
+}
+
+/**
+ * Effect through the 3D stage. Each facet of the screen is flat, so the distance to a moving plane is affine in its pixels:
+ * the band is a linear gradient along the projection of the travel axis on the facet (exact, also for tilted screens).
+ *   scan / bar: plane ⟂ travel axis crossing the extent of all screens; cross: two bars (X and Y);
+ *   sweep: vertical plane turning around the centre of the stage (a beam turning like a lighthouse).
+ */
+function drawAnimStage(ctx, s, a, t, p) {
+  const list = stageWorlds(p, t);
+  const w = list.get(s.id); if (!w) return;
+  const col = a.color || '#fff';
+  const ph = animPhase(a, t);
+  const bands = [];   // { n: unit normal, tail, lead, solid }
+  if (a.type === 'scan' || a.type === 'bar' || a.type === 'cross') {
+    const axes = a.type === 'cross' ? [ANIM_AXIS.lr, ANIM_AXIS.tb] : [ANIM_AXIS[a.dir] || ANIM_AXIS.lr];
+    for (const ax of axes) {
+      const [lo, hi] = stageExtent(list, ax), L = hi - lo;
+      const bw = a.type === 'scan' ? Math.max(0.05, L * M_clamp(a.width ?? 0.25, 0.02, 1)) : Math.max(0.04, L * 0.012);
+      const lead = lo + ph * (L + bw);
+      bands.push({ n: ax, tail: lead - bw, lead, solid: a.type !== 'scan' });
     }
+  } else if (a.type === 'sweep') {
+    const ang = ph * Math.PI * 2;
+    const ex = stageExtent(list, ANIM_AXIS.lr), ez = stageExtent(list, ANIM_AXIS.bf);
+    const c = [(ex[0] + ex[1]) / 2, 0, (ez[0] + ez[1]) / 2];
+    const n = [Math.cos(ang), 0, Math.sin(ang)];
+    const off = dot3(c, n), span = Math.max(ex[1] - ex[0], ez[1] - ez[0]);
+    bands.push({ n, tail: off - span * 0.06, lead: off, solid: false });
+  }
+  for (const f of w.facets) {
+    const dw = f.x1 - f.x0, dh = f.y1 - f.y0;
+    ctx.save();
+    ctx.beginPath(); ctx.rect(f.x0, f.y0, dw, dh); ctx.clip();
+    for (const B of bands) {
+      // d(x, y) = d00 + gx (x − x0) + gy (y − y0)
+      const d00 = dot3(f.p00, B.n), gx = (dot3(f.p10, B.n) - d00) / dw, gy = (dot3(f.p01, B.n) - d00) / dh;
+      const g2 = gx * gx + gy * gy;
+      const at = (D) => [f.x0 + gx * (D - d00) / g2, f.y0 + gy * (D - d00) / g2];
+      if (g2 < 1e-14) {   // facet parallel to the plane: lit as a whole while the band crosses it
+        if (d00 >= B.tail && d00 <= B.lead) { const k = B.solid ? 0.9 : 0.15 + 0.85 * (d00 - B.tail) / (B.lead - B.tail); ctx.fillStyle = rgba(col, k); ctx.fillRect(f.x0, f.y0, dw, dh); }
+        continue;
+      }
+      // skip when the band does not reach the facet
+      const ds = [d00, d00 + gx * dw, d00 + gy * dh, d00 + gx * dw + gy * dh];
+      if (Math.max(...ds) < B.tail || Math.min(...ds) > B.lead) continue;
+      const [x0, y0] = at(B.tail), [x1, y1] = at(B.lead);
+      const g = ctx.createLinearGradient(x0, y0, x1, y1);
+      if (B.solid) { g.addColorStop(0, rgba(col, 0)); g.addColorStop(0.001, rgba(col, 0.9)); g.addColorStop(0.999, rgba(col, 0.9)); g.addColorStop(1, rgba(col, 0)); }
+      else { g.addColorStop(0, rgba(col, 0)); g.addColorStop(0.85, rgba(col, 0.75)); g.addColorStop(1, rgba(col, 1)); g.addColorStop(1, rgba(col, 0)); }
+      ctx.fillStyle = g;
+      // gradient pads beyond its ends: limit the fill to the band (polygon of the facet between the two lines)
+      const nx = gx / Math.sqrt(g2), ny = gy / Math.sqrt(g2), big = (dw + dh) * 4;
+      ctx.beginPath();
+      ctx.moveTo(x0 - ny * big, y0 + nx * big); ctx.lineTo(x0 + ny * big, y0 - nx * big);
+      ctx.lineTo(x1 + ny * big, y1 - nx * big); ctx.lineTo(x1 - ny * big, y1 + nx * big); ctx.closePath();
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+}
+
+function drawAnimCounter(ctx, W, H, a, t) {
+  const col = a.color || '#fff';
+  const total = Math.max(0, t);
+  const mm = Math.floor(total / 60) % 60, ss = Math.floor(total) % 60, ff = Math.floor((total % 1) * 100);
+  const txt = `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}:${String(ff).padStart(2, '0')}`;
+  const fs = Math.min(H * 0.14, W * 0.1);
+  if (fs < 8) return;
+  ctx.save();
+  ctx.font = `bold ${fs}px "Courier New", Menlo, monospace`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
+  ctx.lineWidth = fs * 0.12; ctx.strokeStyle = '#000'; ctx.lineJoin = 'round';
+  ctx.strokeText(txt, W / 2, H - fs * 0.25);
+  ctx.fillStyle = col;
+  ctx.fillText(txt, W / 2, H - fs * 0.25);
+  ctx.restore();
+}
+
+// ------------------------------------------------------------------ projection screens: alignment patterns
+// Drawn in screen pixels. The projector rasters come from the slices of the screen (one output = one projector, as
+// made by the blend wizard): outline + name + resolution, soft-edge zones with their width. Projector colour = the
+// projector feeding that output (3D view), else a fixed palette.
+const PJ_PAL = ['#4F8BFF', '#FFB020', '#2EE6A8', '#FF5DA2', '#B98CFF', '#5FD3FF', '#FF7A45', '#C6F432'];
+function projZones(p, s) {
+  if (!p) return [];
+  return slicesOfSurface(p, s.id).map((sl, i) => {
+    const o = (p.outputs || []).find((x) => x.id === sl.out);
+    const pj = (p.projectors || []).find((x) => x.out && x.out === sl.out);
+    return { x: sl.src.x, y: sl.src.y, w: sl.src.w, h: sl.src.h, blend: sl.blend || {}, name: pj ? pj.name : (o ? o.name : 'OUT ' + (i + 1)),
+      res: o ? `${o.w} × ${o.h}` : `${sl.src.w} × ${sl.src.h}`, color: (pj && pj.color) || PJ_PAL[i % PJ_PAL.length] };
+  });
+}
+function projZonesKey(p, s) { return projZones(p, s).map((z) => [z.x, z.y, z.w, z.h, z.blend.l, z.blend.r, z.blend.t, z.blend.b, z.name, z.res, z.color]); }
+/** Grid cell (px): a round value giving about 8–9 cells over the screen height, lines laid out from the centre. */
+function projCell(W, H) {
+  const want = Math.min(W, H) / 8.5;
+  const nice = [16, 20, 24, 30, 32, 40, 48, 50, 60, 64, 80, 96, 100, 120, 128, 150, 160, 192, 200, 240, 250, 256, 300, 320, 384, 400, 480, 500, 512, 600, 640, 768, 800, 960, 1000, 1024];
+  return nice.reduce((a, b) => (Math.abs(b - want) < Math.abs(a - want) ? b : a), nice[0]);
+}
+function drawProjPattern(ctx, s, st, p) {
+  const W = s.w, H = s.h, base = Math.min(W, H), cx = W / 2, cy = H / 2;
+  const lw = Math.max(1, Math.round(base / 1080));
+  const cell = projCell(W, H), major = 4;
+  const zones = projZones(p, s);
+  const mode = s.pattern;
+  const font = (px, b = true) => `${b ? '700 ' : ''}${Math.max(8, Math.round(px))}px ${fontStack(st.fontFamily)}`;
+  ctx.save();
+  // background
+  ctx.fillStyle = mode === 'projfocus' ? '#202020' : '#000000';
+  ctx.fillRect(0, 0, W, H);
+  // projector zones tinted (blend view): additive, so overlaps read brighter like on the screen
+  if (mode === 'projblend') {
+    ctx.globalCompositeOperation = 'lighter';
+    for (const z of zones) { ctx.fillStyle = rgba(z.color, 0.34); ctx.fillRect(z.x, z.y, z.w, z.h); }
+    ctx.globalCompositeOperation = 'source-over';
+  }
+  // grid from the centre: minor every cell, major every 4 cells
+  const lines = (step, axisLen, c) => { const a = []; for (let v = c % step; v <= axisLen + 0.5; v += step) a.push(Math.round(v)); return a; };
+  const gx = lines(cell, W, cx), gy = lines(cell, H, cy);
+  const isMajor = (v, c) => Math.round(Math.abs(v - c) / cell) % major === 0;
+  ctx.lineWidth = lw;
+  for (const pass of [0, 1]) {
+    ctx.beginPath();
+    for (const x of gx) if (isMajor(x, cx) === !!pass) { ctx.moveTo(x + 0.5, 0); ctx.lineTo(x + 0.5, H); }
+    for (const y of gy) if (isMajor(y, cy) === !!pass) { ctx.moveTo(0, y + 0.5); ctx.lineTo(W, y + 0.5); }
+    ctx.strokeStyle = pass ? 'rgba(255,255,255,0.85)' : (mode === 'projfocus' ? 'rgba(255,255,255,0.35)' : 'rgba(255,255,255,0.42)');
+    ctx.lineWidth = pass ? lw * 2 : lw;
+    ctx.stroke();
+  }
+  // cell references along the edges (A, B, C… / 1, 2, 3…) — call out a grid square on the radio
+  ctx.fillStyle = 'rgba(255,255,255,0.75)'; ctx.font = font(cell * 0.16, false); ctx.textBaseline = 'top';
+  const colName = (i) => (i >= 26 ? String.fromCharCode(65 + Math.floor(i / 26) - 1) : '') + String.fromCharCode(65 + (i % 26));
+  const xs = [0, ...gx.filter((x) => x > 0 && x < W), W], ys = [0, ...gy.filter((y) => y > 0 && y < H), H];
+  if (cell >= 48) {
+    xs.slice(0, -1).forEach((x, i) => { if (xs[i + 1] - x > cell * 0.4) { ctx.textAlign = 'center'; ctx.fillText(colName(i), (x + xs[i + 1]) / 2, lw * 4); } });
+    ys.slice(0, -1).forEach((y, i) => { if (ys[i + 1] - y > cell * 0.4) { ctx.textAlign = 'left'; ctx.fillText(String(i + 1), lw * 5, (y + ys[i + 1]) / 2 - cell * 0.08); } });
+  }
+  // geometry: diagonals, centre cross, circles (keystone / warp check), border, corner L marks
+  ctx.strokeStyle = 'rgba(255,255,255,0.55)'; ctx.lineWidth = lw;
+  ctx.setLineDash([lw * 10, lw * 8]);
+  ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(W, H); ctx.moveTo(W, 0); ctx.lineTo(0, H); ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.strokeStyle = '#FFFFFF'; ctx.lineWidth = lw * 2;
+  ctx.beginPath(); ctx.arc(cx, cy, H * 0.47, 0, Math.PI * 2); ctx.stroke();
+  ctx.lineWidth = lw;
+  ctx.beginPath(); ctx.arc(cx, cy, H * 0.25, 0, Math.PI * 2); ctx.stroke();
+  for (const qx of [W * 0.25, W * 0.75]) if (W / H > 1.6) { ctx.beginPath(); ctx.arc(qx, cy, H * 0.22, 0, Math.PI * 2); ctx.stroke(); }
+  const ca = cell * 0.6;
+  ctx.lineWidth = lw * 3; ctx.strokeStyle = '#FF2D55';
+  ctx.beginPath(); ctx.moveTo(cx - ca, cy); ctx.lineTo(cx + ca, cy); ctx.moveTo(cx, cy - ca); ctx.lineTo(cx, cy + ca); ctx.stroke();
+  ctx.lineWidth = lw * 2; ctx.strokeStyle = '#FFFFFF'; ctx.strokeRect(lw, lw, W - 2 * lw, H - 2 * lw);
+  const L = cell * 0.9; ctx.lineWidth = lw * 4; ctx.strokeStyle = '#00E5FF';
+  ctx.beginPath();
+  for (const [x, y, dx, dy] of [[0, 0, 1, 1], [W, 0, -1, 1], [0, H, 1, -1], [W, H, -1, -1]]) { const ix = x + dx * lw * 2, iy = y + dy * lw * 2; ctx.moveTo(ix + dx * L, iy); ctx.lineTo(ix, iy); ctx.lineTo(ix, iy + dy * L); }
+  ctx.stroke();
+  // focus: resolution wedges and 1 px line pairs at each major intersection
+  if (mode === 'projfocus') {
+    const r = cell * 0.42;
+    for (const x of gx) for (const y of gy) {
+      if (!isMajor(x, cx) || !isMajor(y, cy) || x <= 0 || y <= 0 || x >= W || y >= H) continue;
+      ctx.save(); ctx.translate(x, y);
+      ctx.fillStyle = '#FFFFFF';
+      for (let k = 0; k < 24; k += 2) { const a0 = k * Math.PI / 12, a1 = (k + 1) * Math.PI / 12; ctx.beginPath(); ctx.moveTo(0, 0); ctx.arc(0, 0, r, a0, a1); ctx.closePath(); ctx.fill(); }
+      ctx.restore();
+    }
+    // line-pair patches: 1, 2, 3 px black / white
+    const pw = cell * 1.2, ph = cell * 0.5;
+    [1, 2, 3].forEach((n, i) => {
+      const x0 = cx - pw * 1.6 + i * pw * 1.1, y0 = cy + H * 0.3;
+      if (y0 + ph > H) return;
+      for (let x = 0; x < pw; x += n * 2) { ctx.fillStyle = '#FFFFFF'; ctx.fillRect(Math.round(x0 + x), Math.round(y0), n, Math.round(ph)); }
+      for (let y = 0; y < ph; y += n * 2) { ctx.fillStyle = '#FFFFFF'; ctx.fillRect(Math.round(x0), Math.round(y0 + ph + cell * 0.1 + y), Math.round(pw), n); }
+    });
+  }
+  // projector rasters: outline, soft-edge zones, name + resolution
+  for (const z of zones) {
+    const bl = z.blend;
+    // soft edges: ramp (blend view) or hatch + width
+    for (const side of ['l', 'r', 't', 'b']) {
+      const bw = +bl[side] || 0; if (!bw) continue;
+      const r = side === 'l' ? [z.x, z.y, bw, z.h] : side === 'r' ? [z.x + z.w - bw, z.y, bw, z.h] : side === 't' ? [z.x, z.y, z.w, bw] : [z.x, z.y + z.h - bw, z.w, bw];
+      ctx.save(); ctx.beginPath(); ctx.rect(...r); ctx.clip();
+      if (mode === 'projblend') {
+        const g = side === 'l' ? ctx.createLinearGradient(r[0], 0, r[0] + r[2], 0) : side === 'r' ? ctx.createLinearGradient(r[0] + r[2], 0, r[0], 0) : side === 't' ? ctx.createLinearGradient(0, r[1], 0, r[1] + r[3]) : ctx.createLinearGradient(0, r[1] + r[3], 0, r[1]);
+        g.addColorStop(0, rgba(z.color, 0)); g.addColorStop(1, rgba(z.color, 0.55));
+        ctx.fillStyle = g; ctx.fillRect(...r);
+      } else {
+        ctx.strokeStyle = rgba(z.color, 0.55); ctx.lineWidth = lw * 2;
+        ctx.beginPath();
+        const step = Math.max(8, cell * 0.18);
+        for (let d = -r[3]; d < r[2]; d += step) { ctx.moveTo(r[0] + d, r[1] + r[3]); ctx.lineTo(r[0] + d + r[3], r[1]); }
+        ctx.stroke();
+      }
+      ctx.restore();
+      // width label, centred in the zone (vertical text for side zones) — once per overlap: the left / top neighbour
+      // carries it, unless this raster has no neighbour on that side
+      const twin = zones.some((o) => o !== z && (side === 'r' ? Math.abs(o.x - (z.x + z.w - bw)) < 2 && +o.blend.l > 0 : side === 'b' ? Math.abs(o.y - (z.y + z.h - bw)) < 2 && +o.blend.t > 0 : false));
+      if (twin) continue;
+      ctx.save();
+      ctx.fillStyle = z.color; ctx.font = font(Math.min(cell * 0.22, (side === 'l' || side === 'r' ? bw : r[3]) * 0.5)); ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.translate(r[0] + r[2] / 2, r[1] + r[3] / 2);
+      if (side === 'l' || side === 'r') ctx.rotate(-Math.PI / 2);
+      ctx.fillText(`BLEND ${bw} px`, 0, 0);
+      ctx.restore();
+    }
+    ctx.strokeStyle = z.color; ctx.lineWidth = lw * 4; ctx.setLineDash([lw * 18, lw * 8]);
+    ctx.strokeRect(z.x + lw * 2, z.y + lw * 2, z.w - lw * 4, z.h - lw * 4);
+    ctx.setLineDash([]);
+    // tag: name + resolution, top of the raster (after the blend zone)
+    const tx = z.x + (+bl.l || 0) + cell * 0.25, ty = z.y + (+bl.t || 0) + cell * 0.45;
+    const fs1 = Math.max(12, Math.min(cell * 0.42, z.w * 0.05)), fs2 = fs1 * 0.55;
+    ctx.font = font(fs1); const w1 = ctx.measureText(z.name).width;
+    ctx.font = font(fs2, false); const w2 = ctx.measureText(z.res).width;
+    const bwid = Math.max(w1, w2) + fs1 * 0.8, bh = fs1 * 1.95;
+    ctx.fillStyle = 'rgba(0,0,0,0.72)'; ctx.fillRect(tx, ty, bwid, bh);
+    ctx.fillStyle = z.color; ctx.fillRect(tx, ty, fs1 * 0.18, bh);
+    ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+    ctx.fillStyle = '#FFFFFF'; ctx.font = font(fs1); ctx.fillText(z.name, tx + fs1 * 0.45, ty + fs1 * 0.18);
+    ctx.fillStyle = 'rgba(255,255,255,0.8)'; ctx.font = font(fs2, false); ctx.fillText(z.res, tx + fs1 * 0.45, ty + fs1 * 1.25);
   }
   ctx.restore();
 }

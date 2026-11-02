@@ -138,3 +138,19 @@ tr.sel td { background: var(--accent-soft); }
 .btn.block { display: flex; width: 100%; margin-top: 12px; }
 .card.out canvas { width: 120px; height: 68px; }
 .outhead { margin-top: 22px; }
+
+/* v0.5: standalone presentation */
+body.present #lang { }
+.preshead { display: flex; gap: 12px; align-items: flex-end; margin: 4px 0 14px; padding-bottom: 12px; border-bottom: 1px solid var(--l1); }
+.preshead h1 { margin: 0; font-size: 26px; letter-spacing: -.3px; color: var(--t1); }
+.preshead .meta { color: var(--t3); font-size: 13px; } .preshead .meta.r { text-align: right; }
+.nocv { width: 92px; height: 60px; border-radius: 6px; background: var(--s3); flex: none; }
+
+[hidden] { display: none !important; }   /* .ic / .btn set display: the hidden attribute must win */
+
+/* synoptic / racks cards (drawings made by the desktop app) */
+.stagecard .icsyn, .stagecard .icrack { width: 42px; height: 42px; flex: none; display: grid; place-items: center; border-radius: 10px; background: rgba(79,139,255,.18); }
+.stagecard .icsyn svg, .stagecard .icrack svg { width: 24px; height: 24px; fill: none; stroke: #8FB6FF; stroke-width: 1.6; stroke-linejoin: round; stroke-linecap: round; }
+.stagecard.racks { background: linear-gradient(135deg, rgba(46,230,200,.14), rgba(46,230,200,.03)); border-color: rgba(46,230,200,.35); }
+.stagecard.racks .icrack { background: rgba(46,230,200,.16); } .stagecard.racks .icrack svg { stroke: #6FE9D2; }
+.plan.noside { grid-template-columns: minmax(0, 1fr); }

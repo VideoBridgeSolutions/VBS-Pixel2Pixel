@@ -62,9 +62,16 @@ async function aesKey(prot, { password = '', key = '' } = {}, salt) {
 /** What the Viewer needs, nothing more: no sharing secrets, no live inputs (NDI / capture), no recorded 3D takes.
  *  Screens, logos / texts, outputs and slices stay: the technicians see the test patterns and the outputs as delivered.
  *  brandLock: the sender's licence is Free (the Viewer then draws the Pixel2Pixel output footer, as the app does). */
-export function viewerSubset(p, { models = true, stage = true, brandLock = true } = {}) {
+export function viewerSubset(p, { models = true, stage = true, brandLock = true, present = null } = {}) {
   const c = JSON.parse(JSON.stringify(p));
-  delete c.share; delete c.ui; delete c.app;
+  delete c.share; delete c.presentShare; delete c.ui; delete c.app;   // write tokens never leave the studio
+  // standalone presentation: what the client may see (left out = removed from the file when it can be, hidden otherwise)
+  if (present) {
+    c._present = { ...present };
+    if (present.stage === false) stage = false;
+    if (present.models === false) models = false;
+    if (present.outputs === false) { c.outputs = []; c.slices = []; }
+  }
   if (stage === false) { c.stage = {}; c._noStage = true; }   // no 3D stage for the technicians (placement, models, views, cues)
   else if (c.stage) {
     if (!models) c.stage.models = [];
@@ -77,8 +84,8 @@ export function viewerSubset(p, { models = true, stage = true, brandLock = true 
 }
 
 /** Project -> .p2pview text. prot: 'app' | 'password' | 'link'. */
-export async function encodeViewerPackage(project, { prot = 'app', password = '', key = '', rev = 1, models = true, stage = true, brandLock = true } = {}) {
-  const body = enc.encode(JSON.stringify(viewerSubset(project, { models, stage, brandLock })));
+export async function encodeViewerPackage(project, { prot = 'app', password = '', key = '', rev = 1, models = true, stage = true, brandLock = true, present = null } = {}) {
+  const body = enc.encode(JSON.stringify(viewerSubset(project, { models, stage, brandLock, present })));
   const z = await gzip(body);
   const plain = z || body;
   const salt = randomBytes(16), iv = randomBytes(12);
@@ -109,6 +116,43 @@ export async function decodeViewerPackage(text, { password = '', key = '' } = {}
   const p = JSON.parse(dec.decode(plain));
   p.viewerOnly = true;   // p._brandLock: read by the Viewer before normalizeProject
   return { project: p, meta: { name: o.name, at: o.at, rev: o.rev, prot: o.prot } };
+}
+
+// ---------------------------------------------------------------- presentation .html opened by the Viewer
+// iOS (Files, Mail, WhatsApp) shows an .html file in a preview that does not run JavaScript: the client opens the file in
+// the Viewer instead (installed web app, works offline); the file is decrypted on the device, never sent anywhere.
+const tagText = (html, id) => { const m = html.match(new RegExp(`<script[^>]*id="${id}"[^>]*>([\\s\\S]*?)</script>`)); return m ? m[1] : null; };
+const unb64 = (s) => { const bin = atob(String(s).replace(/\s+/g, '')); const o = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) o[i] = bin.charCodeAt(i); return o; };
+export function isPresentationHtml(text) {
+  return typeof text === 'string' && text.length < 3e8 && text.includes('id="p2p-cfg"') && text.includes('id="p2p-data"');
+}
+/** { password: bool, title } of a presentation .html. */
+export function presentationInfo(text) {
+  const c = JSON.parse(tagText(text, 'p2p-cfg') || '{}');
+  const ti = (text.match(/<title>([^<]*)<\/title>/) || [])[1] || '';
+  return { password: !c.k, title: ti.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/ — Pixel2Pixel$/, '') };
+}
+/** Presentation .html -> the .p2pview package it carries (+ title). Throws { code: 'password' | 'bad' }. */
+export async function unwrapPresentationHtml(text, password = '') {
+  let c, data;
+  try { c = JSON.parse(tagText(text, 'p2p-cfg')); data = unb64(tagText(text, 'p2p-data')); } catch (_) { throw Object.assign(new Error('not a presentation'), { code: 'bad' }); }
+  const iv = unb64(c.iv);
+  let key;
+  if (c.k) {
+    const raw = unb64(c.k).map((x, i) => x ^ iv[i % iv.length] ^ (i * 29 + 7) & 255);
+    key = await crypto.subtle.importKey('raw', raw, 'AES-GCM', false, ['decrypt']);
+  } else {
+    if (!password) throw Object.assign(new Error('password required'), { code: 'password' });
+    const base = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveKey']);
+    key = await crypto.subtle.deriveKey({ name: 'PBKDF2', salt: unb64(c.s), iterations: c.it || 250000, hash: 'SHA-256' }, base, { name: 'AES-GCM', length: 256 }, false, ['decrypt']);
+  }
+  let plain;
+  try { plain = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, data)); } catch (_) {
+    throw Object.assign(new Error(c.k ? 'damaged or modified file' : 'wrong password'), { code: c.k ? 'bad' : 'password' });
+  }
+  const o = JSON.parse(dec.decode(await gunzip(plain)));
+  if (!o || typeof o.embed !== 'string') throw Object.assign(new Error('not a presentation'), { code: 'bad' });
+  return { pkg: o.embed, title: o.title || '' };
 }
 
 // ---------------------------------------------------------------- live share link

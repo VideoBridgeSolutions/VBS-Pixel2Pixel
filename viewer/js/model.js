@@ -1,7 +1,8 @@
 // Pixel2Pixel — data model, presets, helpers
 // Shared by the editor and the live output windows.
+import { newSyn, newRack } from './devices.js';
 
-export const APP_VERSION = '1.49.3';
+export const APP_VERSION = '1.50.88';
 export const FILE_FORMAT = 1;
 
 // ------------------------------------------------------------------ colour presets
@@ -27,6 +28,17 @@ export const COLOR_PRESETS = {
 export const PRESET_NAMES = Object.keys(COLOR_PRESETS);
 
 export const PATTERNS = ['checker', 'checker3', 'rows', 'cols', 'compgrad', 'soft', 'tone', 'outline', 'gradient', 'solid', 'bars', 'grayramp'];
+/** Projection screens: patterns made for projector alignment (no LED cabinets). */
+export const PROJ_PATTERNS = ['projgrid', 'projblend', 'projfocus'];
+/** Patterns offered for a projection screen (projection patterns first, then the ones that make sense without cabinets). */
+export const PROJ_PATTERN_LIST = [...PROJ_PATTERNS, 'gradient', 'grayramp', 'bars', 'solid'];
+const LED_ONLY_PATTERNS = ['checker', 'checker3', 'rows', 'cols', 'compgrad', 'soft', 'tone', 'outline'];
+/** A projection screen keeps a projection pattern: LED-only patterns are replaced once (pmig), later choices are kept. */
+export function projPatternFix(s) {
+  if (!s || s.kind !== 'proj' || s.pmig) return;
+  if (!s.pattern || LED_ONLY_PATTERNS.includes(s.pattern)) s.pattern = 'projgrid';
+  s.pmig = 1;
+}
 /** Patterns that read the project-wide composition gradient (bitmap depends on the surface position). */
 export const COMP_PATTERNS = ['compgrad'];
 
@@ -409,7 +421,7 @@ export function defaultStyle() {
     cabling: false, cablingWidth: 1, cablingLabels: true, cablingDim: 0.35, cablingUsage: true,   // cablingUsage: load % of each port on its line
     powerPath: false,
     // animation
-    anim: { enabled: false, type: 'scan', dir: 'lr', width: 0.25, speed: 1, color: '#FFFFFF', counter: true }
+    anim: { enabled: false, type: 'scan', dir: 'lr', width: 0.25, speed: 1, color: '#FFFFFF', counter: true, space: 'screen' }   // space: 'screen' | 'comp' | 'stage' (render.js › drawAnim)
   };
 }
 
@@ -430,8 +442,8 @@ export function newSurface(props = {}) {
     pattern: 'checker',
     colors: { preset: 'Red', count: 2, hue: 0, c1: '#FF00CE', c2: '#FFCC00', c3: '#8300FF', c4: '#00FFCC', gradA: '#FF1A1A', gradB: '#1E1EFF', gradDir: 'v', tone: 0.22, smooth: true },   // tone = darkening of every other cabinet (premium patterns)
     virtual: [],                                      // "c,r" keys of virtual (blank) tiles
-    data: { flow: 'rows', pattern: 'serpentine', start: 'tl', portPx: 0, perPort: 0, portStart: 1 },  // LED data chain (portPx 0 = processor default)
-    power: { flow: 'rows', pattern: 'serpentine', start: 'bl', balance: false, wholeLines: false, perCircuit: 0, wattsMax: 0, wattsAvg: 0, kg: 0, circuitStart: 1 }, // perCircuit 0 = auto from W
+    data: { flow: 'rows', pattern: 'serpentine', start: 'tl', balance: true, wholeLines: true, portPx: 0, perPort: 0, portStart: 1 },  // LED data chain (portPx 0 = processor default): serpentine, whole rows, from the top left
+    power: { flow: 'auto', pattern: 'serpentine', start: 'tl', balance: true, wholeLines: true, perCircuit: 0, wattsMax: 0, wattsAvg: 0, kg: 0, circuitStart: 1 }, // perCircuit 0 = auto from W; flow 'auto' = balanced columns (rows when a column is under half a circuit)
     comp: { x: 0, y: 0, rot: 0, flip: false },    // Input Selection in the composition (Resolume)
     // Stage 3D (metres, Y up). x/y/z = centre of the screen; rotations in degrees (Y = yaw, X = tilt, Z = roll)
     // curve: 'none' | 'h' (columns facet around a vertical axis) | 'v' (rows facet around a horizontal axis); curveDeg = angle between adjacent cabinets, + = concave (towards the audience)
@@ -439,7 +451,9 @@ export function newSurface(props = {}) {
       // src: 'auto' (composition video if set) | 'map' | 'dev:<deviceId>'   // curve 'joints': jh / jv = angle at each column / row joint (deg)
     style: {}                                         // per-surface overrides of project.style (multi-selection editing)
   };
-  return deepAssign(s, props);
+  const out = deepAssign(s, props);
+  if (out.kind === 'proj' && !(props && props.pattern)) { out.pattern = 'projgrid'; out.pmig = 1; }
+  return out;
 }
 
 export function newOutput(props = {}) {
@@ -471,7 +485,7 @@ export function newSlice(screen, outputId, props = {}) {
 
 export function newRender(props = {}) {
   return deepAssign({
-    preset: 'studio', sky: 'solid', skyTop: '#1b2133', skyBottom: '#0a0d16',
+    preset: 'studio', tech: false, labels: false, sky: 'solid', skyTop: '#1b2133', skyBottom: '#0a0d16',
     haze: 0, hazeColor: '#20242e',
     ambient: 1, sun: 1, sunColor: '#ffffff',
     bloom: true, bloomStrength: 0.35, bloomRadius: 0.4, bloomThreshold: 0.55,
@@ -480,6 +494,11 @@ export function newRender(props = {}) {
     quality: 'normal', fov: 50
   }, props);
 }
+/** Stage deck: auto = footprint from the screens (back edge at the upstage-most screen, towards the audience +Z). */
+export function newDeck(props = {}) {
+  return deepAssign({ on: false, auto: true, w: 12, d: 8, h: 1, x: 0, z: 4, color: '' }, props);
+}
+export const deckOf = (st) => newDeck((st && st.deck) || {});
 export function newCrowd(props = {}) {
   return deepAssign({ enabled: false, anchor: 'front', width: 30, depth: 18, dist: 3, x: 0, z: 0, avoid: true, density: 1.2, height: 1.75, arms: 15, bounce: false, color: '#1d2028', seed: 7 }, props);
 }
@@ -490,13 +509,19 @@ export const RENDER_PRESETS = {
   festival:{ sky: 'gradient', skyTop: '#02040c', skyBottom: '#141a33', haze: 0.18, hazeColor: '#0c1020', ambient: 0.25, sun: 0.12, sunColor: '#9fb4ff', bloom: true, bloomStrength: 0.65, bloomRadius: 0.45, bloomThreshold: 0.45, reflect: false, spill: true, spillIntensity: 1.3, _floor: '#121318' },
   sunset:  { sky: 'gradient', skyTop: '#241a3d', skyBottom: '#f0884a', haze: 0.12, hazeColor: '#7a4d52', ambient: 0.65, sun: 0.9, sunColor: '#ffb27a', bloom: true, bloomStrength: 0.45, bloomRadius: 0.4, bloomThreshold: 0.5, reflect: false, spill: true, spillIntensity: 0.8, _floor: '#3a3230' },
   day:     { sky: 'gradient', skyTop: '#5f9ee3', skyBottom: '#dfe9f3', haze: 0.06, hazeColor: '#c9d7e6', ambient: 1.3, sun: 1.8, sunColor: '#fff6e8', bloom: true, bloomStrength: 0.15, bloomRadius: 0.3, bloomThreshold: 0.8, reflect: false, spill: true, spillIntensity: 0.25, _floor: '#6b6f73' },
-  venue:   { sky: 'solid', haze: 0.22, hazeColor: '#0a0a0c', ambient: 0.1, sun: 0, sunColor: '#ffffff', bloom: true, bloomStrength: 0.6, bloomRadius: 0.45, bloomThreshold: 0.45, reflect: true, reflectAmount: 0.4, spill: true, spillIntensity: 1.5, _bg: '#09090b', _floor: '#141416' }
+  venue:   { sky: 'solid', haze: 0.22, hazeColor: '#0a0a0c', ambient: 0.1, sun: 0, sunColor: '#ffffff', bloom: true, bloomStrength: 0.6, bloomRadius: 0.45, bloomThreshold: 0.45, reflect: true, reflectAmount: 0.4, spill: true, spillIntensity: 1.5, _bg: '#09090b', _floor: '#141416' },
+  // technical 3D (Disguise-like): neutral grey world, flat light, LEDs unlit, outlines + name tags, perspective
+  atelier: { tech: true, labels: true, techLine: '#202226', techGridA: '#6c6e72', techGridB: '#85878b', techHuman: '#34363b', deckColor: '#696b70', sky: 'solid', haze: 0.08, hazeColor: '#7b7d81', ambient: 1.45, sun: 0.45, sunColor: '#ffffff', bloom: false, reflect: false, spill: false, _bg: '#7b7d81', _floor: '#5d5f63' },
+  atelierDark: { tech: true, labels: true, labelBg: 'rgba(222,226,232,0.92)', labelInk: '#15171b', techLine: '#c9ced6', techGridA: '#34373c', techGridB: '#45494f', techHuman: '#6a6e76', deckColor: '#33363b', sky: 'solid', haze: 0.08, hazeColor: '#2a2c30', ambient: 1.3, sun: 0.45, sunColor: '#ffffff', bloom: false, reflect: false, spill: false, _bg: '#2a2c30', _floor: '#212326' },
+  plan:    { planView: true, labels: true, tech: true, techLine: '#1b1e24', techGridA: '#c9cdd5', techGridB: '#9ba2ae', sky: 'solid', haze: 0, ambient: 1.5, sun: 0.55, sunColor: '#ffffff', bloom: false, reflect: false, spill: false, _bg: '#f3f4f6', _floor: '#e8eaee' },
+  planDark:{ planView: true, labels: true, tech: true, techLine: '#d9dee7', techGridA: '#2c323c', techGridB: '#46505f', sky: 'solid', haze: 0, ambient: 1.15, sun: 0.6, sunColor: '#ffffff', bloom: false, reflect: false, spill: false, _bg: '#0f1216', _floor: '#161a20' }
 };
 
 export function newStage() {
   return {
     pitchDefault: 3.9,          // mm, used when a surface has neither pitch nor cabinet model
     floor: true, grid: true, human: true, backs: true, axes: false,
+    deck: newDeck(),            // stage deck (praticable) drawn under / in front of the screens
     bg: '#14171e', floorColor: '#22262f',
     glow: 1,                    // LED brightness multiplier in the 3D view
     views: [],                  // saved cameras { id, name, pos:[x,y,z], target:[x,y,z], fov }
@@ -561,12 +586,26 @@ export function railBuild(rail) {
     const ph = pc.th + pc.sgn * u / pc.r;
     return { x: pc.cx + pc.sgn * pc.r * Math.sin(ph), z: pc.cz - pc.sgn * pc.r * Math.cos(ph), th: ph };
   };
-  // centre the path's bounding box on the rail origin
+  // origin of the rail: by default the centre of the path's bounding box; with an anchor (open rails) the start, the
+  // middle or the end of the path stays at the rail origin with its heading = h0, whatever the shape: bending the rail
+  // keeps that point in place and moves the rest (« on part de la gauche / du centre / de la droite »)
+  const anchor = !rail.closed && len > 0 && (rail.anchor === 'start' || rail.anchor === 'center' || rail.anchor === 'end') ? rail.anchor : null;
+  let at;
+  if (anchor) {
+    const dA = Number.isFinite(+rail.anchorD) && rail.anchorD !== '' && rail.anchorD !== null ? clamp(+rail.anchorD, 0, len) : anchor === 'start' ? 0 : anchor === 'end' ? len : len / 2;
+    const qA = raw(dA), th0 = (+rail.h0 || 0) * Math.PI / 180, rot = th0 - qA.th;
+    const c = Math.cos(rot), s = Math.sin(rot);
+    at = (d) => { const q = raw(d), dx = q.x - qA.x, dz = q.z - qA.z; return { x: dx * c - dz * s, z: dx * s + dz * c, th: q.th + rot }; };
+  } else {
+    let bx0 = Infinity, bx1 = -Infinity, bz0 = Infinity, bz1 = -Infinity;
+    const nb = Math.max(2, Math.ceil(len / 0.05));
+    for (let i = 0; i <= nb; i++) { const q = raw(len * i / nb); bx0 = Math.min(bx0, q.x); bx1 = Math.max(bx1, q.x); bz0 = Math.min(bz0, q.z); bz1 = Math.max(bz1, q.z); }
+    const ox = len ? (bx0 + bx1) / 2 : 0, oz = len ? (bz0 + bz1) / 2 : 0;
+    at = (d) => { const q = raw(d); return { x: q.x - ox, z: q.z - oz, th: q.th }; };
+  }
   let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
   const n = Math.max(2, Math.ceil(len / 0.05));
-  for (let i = 0; i <= n; i++) { const q = raw(len * i / n); x0 = Math.min(x0, q.x); x1 = Math.max(x1, q.x); z0 = Math.min(z0, q.z); z1 = Math.max(z1, q.z); }
-  const ox = len ? (x0 + x1) / 2 : 0, oz = len ? (z0 + z1) / 2 : 0;
-  const at = (d) => { const q = raw(d); return { x: q.x - ox, z: q.z - oz, th: q.th }; };
+  for (let i = 0; i <= n; i++) { const q = at(len * i / n); x0 = Math.min(x0, q.x); x1 = Math.max(x1, q.x); z0 = Math.min(z0, q.z); z1 = Math.max(z1, q.z); }
   // distances where the path bends: joints + arc subdivisions (≤ 3°)
   const bends = (d0, d1) => {
     const out = [];
@@ -578,7 +617,54 @@ export function railBuild(rail) {
     if (rail.closed && len > 0) { const base = [...out]; for (const m of [-1, 1, 2]) for (const v of base) out.push(v + m * len); }
     return out.filter((v) => v > d0 + 1e-6 && v < d1 - 1e-6);
   };
-  return { len, at, bends, pieces, size: { w: x1 - x0, d: z1 - z0 } };
+  return { len, at, bends, pieces, size: { w: x1 - x0, d: z1 - z0 }, anchor };
+}
+
+/** Rail-local point -> plan (world X / Z), as stage3d places a rail: Y rotation ry (degrees) then translation. */
+export function railToWorld(rail, q) {
+  const a = (+rail.ry || 0) * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
+  return { x: (+rail.x || 0) + q.x * c + q.z * s, z: (+rail.z || 0) - q.x * s + q.z * c, th: q.th - a };
+}
+/** Changes the anchor of a rail without moving it: the new anchor point keeps its place and heading. */
+export function setRailAnchor(rail, anchor, dAnchor = null) {
+  const before = railBuild(rail);
+  const dA = Number.isFinite(dAnchor) ? clamp(dAnchor, 0, before.len) : anchor === 'start' ? 0 : anchor === 'end' ? before.len : before.len / 2;
+  const w = railToWorld(rail, before.at(dA));
+  const lq = before.at(dA);
+  rail.anchor = anchor || '';
+  rail.anchorD = anchor && Number.isFinite(dAnchor) ? Math.round(dA * 10000) / 10000 : null;
+  if (!anchor) {   // back to the bounding-box centre: keep the rail where it is (same start heading, same middle point)
+    rail.h0 = Math.round(before.at(0).th * 180 / Math.PI * 10000) / 10000;
+    const auto = railBuild(rail);
+    const ref = before.at(before.len / 2), now = auto.at(auto.len / 2);
+    const a = (+rail.ry || 0) * Math.PI / 180, c = Math.cos(a), s = Math.sin(a);
+    const dx = ref.x - now.x, dz = ref.z - now.z;
+    rail.x = Math.round(((+rail.x || 0) + dx * c + dz * s) * 10000) / 10000; rail.z = Math.round(((+rail.z || 0) - dx * s + dz * c) * 10000) / 10000;
+    return;
+  }
+  rail.h0 = Math.round(lq.th * 180 / Math.PI * 10000) / 10000;   // heading at the anchor, rail-local
+  rail.x = Math.round(w.x * 10000) / 10000; rail.z = Math.round(w.z * 10000) / 10000;
+}
+/** Bends a rail: the first arc gets angle a (degrees), every arc is scaled the same way and keeps its length
+ *  (radius adjusted), so the screens keep their size along the rail. |a| ≥ 0.5° (nearly straight). */
+export function setRailBend(rail, a) {
+  let arcs = (rail.segs || []).filter((sg) => sg.t === 'arc');
+  if (!arcs.length) {   // straight rail: its lines become arcs of the same length
+    for (const sg of rail.segs || []) if (sg.t === 'line') { const L = Math.max(0.01, +sg.len || 0); sg.t = 'arc'; sg.a = 1; sg.r = L / (Math.PI / 180); delete sg.len; }
+    arcs = (rail.segs || []).filter((sg) => sg.t === 'arc');
+    if (!arcs.length) return;
+  }
+  const a0 = +arcs[0].a || 1;
+  let target = +a || 0;
+  if (Math.abs(target) < 0.5) target = target < 0 ? -0.5 : 0.5;
+  const k = target / a0;
+  for (const sg of arcs) {
+    const L = Math.abs(+sg.a || 0) * Math.PI / 180 * Math.max(0.05, +sg.r || 1);
+    let na = (+sg.a || 0) * k;
+    if (Math.abs(na) < 0.5) na = na < 0 ? -0.5 : 0.5;
+    sg.a = Math.round(na * 1000) / 1000;
+    sg.r = Math.round(Math.max(0.05, L / (Math.abs(sg.a) * Math.PI / 180)) * 10000) / 10000;
+  }
 }
 
 /** Preset rail sized to a total length L (m). kind: arc | circle | half | s | wave | wrap | line */
@@ -597,7 +683,7 @@ export function railPreset(kind, L, o = {}) {
 }
 
 export function newModel3d(props = {}) {
-  return deepAssign({ id: uid('m3d'), name: 'MODÈLE', kind: 'glb', data: null, x: 0, y: 0, z: 0, rx: 0, ry: 0, rz: 0, scale: 1, unit: 'm', opacity: 1, visible: true, color: '' }, props);
+  return deepAssign({ id: uid('m3d'), name: 'MODÈLE', kind: 'glb', data: null, x: 0, y: 0, z: 0, rx: 0, ry: 0, rz: 0, scale: 1, unit: 'm', opacity: 1, visible: true, color: '', hidden: [] }, props);   // hidden: element ids (modelwizard.js)
 }
 
 /**
@@ -610,7 +696,7 @@ export function newProjector(props = {}) {
     id: uid('prj'), name: 'PROJ 1', lib: '', brand: '', model: '', resW: 1920, resH: 1200, lumens: 20000, stack: 1,
     lens: '', trMin: 1.2, trMax: 2.4, tr: 1.6, shiftH: 0, shiftV: 0, shiftRangeH: [-30, 30], shiftRangeV: [-50, 50],
     shiftConv: 'full',          // how the maker states lens shift: 'full' (% of the image) | 'half' (% of half the image, Barco)
-    ceiling: false, rear: false, // installation menu: ceiling = image turned 180°, rear = image mirrored (rear projection)
+    ceiling: false, rear: false, portrait: false, // installation: ceiling = rolled 180°, rear = behind the screen, portrait = body on its side (rolled 90°)
     x: 0, y: 2, z: 10, rx: 0, ry: 0, rz: 0, out: '', visible: true, color: '#4F8BFF', kg: 0, watts: 0
   }, props);
 }
@@ -771,25 +857,49 @@ export function stageMirror(st, plane = 'x', at = 0) {
  * and to every new surface. mount: flown (cables arrive from the top) | ground (from the bottom); side: left | right;
  * lowLatency: processor low-latency mode (NovaStar / HELIOS: columns only); followData: power circuits take the data path.
  */
+/** What a scene holds: LED screens, projection (screens or projectors). */
+export function sceneKinds(p) {
+  const led = (p.surfaces || []).some((s) => s.kind !== 'proj');
+  const proj = (p.surfaces || []).some((s) => s.kind === 'proj') || (p.projectors || []).length > 0;
+  return { led, proj, mixed: led && proj };
+}
+/**
+ * Project limited to one kind for an export: 'led' (LED screens, their slices and outputs, no projector) or 'proj'
+ * (projection screens, projectors and their outputs). 'all' / empty: the project itself.
+ */
+export function scopeProject(p, scope) {
+  if (!scope || scope === 'all') return p;
+  const keep = (s) => (scope === 'proj' ? s.kind === 'proj' : s.kind !== 'proj');
+  const surfaces = p.surfaces.filter(keep), ids = new Set(surfaces.map((s) => s.id));
+  const slices = p.slices.filter((sl) => ids.has(sl.surfaceId));
+  const outIds = new Set(slices.map((sl) => sl.out));
+  const projectors = scope === 'proj' ? (p.projectors || []) : [];
+  for (const pj of projectors) if (pj.out) outIds.add(pj.out);
+  return { ...p, surfaces, slices, outputs: p.outputs.filter((o) => outIds.has(o.id)), projectors };
+}
 export function newCablingMethod(props = {}) {
   // pFlow / pCorner: own power path when followData is off (power usually starts at the bottom: distribution on the floor)
-  return { mount: 'flown', side: 'left', flow: 'rows', pattern: 'serpentine', balance: true, wholeLines: false, lowLatency: false, followData: true, pFlow: 'rows', pCorner: 'bl', ...props };
+  // default rules (as LED crews cable): data = serpentine in whole rows from the top left; power = its own path from the
+  // top left, by columns cut in even parts (16 high on 10 per circuit → 8 + 8), by rows when a column is under half a
+  // circuit (pFlow 'auto', resolved per surface in powerChain)
+  return { mount: 'flown', side: 'left', flow: 'rows', pattern: 'serpentine', balance: true, wholeLines: true, lowLatency: false, followData: false, pFlow: 'auto', pCorner: 'tl', ...props };
 }
 /** Start corner from the method: flown = top, ground = bottom; left / right. */
 export function methodStart(m) { return (m.mount === 'ground' ? 'b' : 't') + (m.side === 'right' ? 'r' : 'l'); }
 /** Built-in methods (« profils »); users save their own next to these. */
 export const CABLING_PRESETS = {
-  tour:     { label: 'Tournée — serpentin en lignes, départ en haut à gauche', method: { mount: 'flown', side: 'left', flow: 'rows', pattern: 'serpentine', balance: true, wholeLines: false, lowLatency: false, followData: true } },
-  ground:   { label: 'Ground stack — serpentin en lignes, départ en bas à gauche', method: { mount: 'ground', side: 'left', flow: 'rows', pattern: 'serpentine', balance: true, wholeLines: false, lowLatency: false, followData: true } },
-  columns:  { label: 'Colonnes entières — un port par colonne(s), départ en haut', method: { mount: 'flown', side: 'left', flow: 'cols', pattern: 'serpentine', balance: true, wholeLines: true, lowLatency: false, followData: true } },
-  lowlat:   { label: 'Faible latence (NovaStar / HELIOS) — colonnes obligatoires', method: { mount: 'flown', side: 'left', flow: 'cols', pattern: 'serpentine', balance: true, wholeLines: true, lowLatency: true, followData: true } }
+  tour:     { label: 'Tournée — serpentin en lignes entières, départ en haut à gauche ; power en colonnes équilibrées', method: { mount: 'flown', side: 'left', flow: 'rows', pattern: 'serpentine', balance: true, wholeLines: true, lowLatency: false, followData: false, pFlow: 'auto', pCorner: 'tl' } },
+  ground:   { label: 'Ground stack — serpentin en lignes entières, départ en bas à gauche ; power en colonnes équilibrées', method: { mount: 'ground', side: 'left', flow: 'rows', pattern: 'serpentine', balance: true, wholeLines: true, lowLatency: false, followData: false, pFlow: 'auto', pCorner: 'bl' } },
+  columns:  { label: 'Colonnes entières — un port par colonne(s), départ en haut', method: { mount: 'flown', side: 'left', flow: 'cols', pattern: 'serpentine', balance: true, wholeLines: true, lowLatency: false, followData: false, pFlow: 'auto', pCorner: 'tl' } },
+  lowlat:   { label: 'Faible latence (NovaStar / HELIOS) — colonnes obligatoires', method: { mount: 'flown', side: 'left', flow: 'cols', pattern: 'serpentine', balance: true, wholeLines: true, lowLatency: true, followData: false, pFlow: 'auto', pCorner: 'tl' } }
 };
 /** Data / power settings a method gives to a surface. */
 export function methodSurfaceData(m) {
   const start = methodStart(m);
   const flow = m.lowLatency ? 'cols' : m.flow;
-  const power = m.followData === false ? { flow: m.pFlow || 'rows', pattern: 'serpentine', start: m.pCorner || 'bl', balance: !!m.balance, wholeLines: !!m.wholeLines } : { flow, pattern: m.pattern === 'straight' ? 'serpentine' : m.pattern, start, balance: !!m.balance, wholeLines: !!m.wholeLines };
-  return { data: { flow, pattern: m.pattern, start, balance: !!m.balance, wholeLines: !!m.wholeLines }, power };
+  // own power path: always balanced, whole lines (a circuit never restarts mid-column / mid-row)
+  const power = m.followData === false ? { flow: m.pFlow || 'auto', pattern: 'serpentine', start: m.pCorner || 'tl', balance: true, wholeLines: true } : { flow, pattern: m.pattern === 'straight' ? 'serpentine' : m.pattern, start, balance: !!m.balance, wholeLines: !!m.wholeLines };
+  return { data: { flow, pattern: m.pattern, start, balance: !!m.balance, wholeLines: !!m.wholeLines, mode: 'auto' }, power: { ...power, mode: 'auto' } };
 }
 
 export function newProject() {
@@ -803,6 +913,8 @@ export function newProject() {
     processor: { type: 'NovaStar', portPx: 650000, portsPerProc: 16, fps: 60, bitDepth: 8, headroom: 90, redundancy: 'none', portLabel: 'P', autoNumber: true, outPerProc: true, noSplit: true },
     power: { voltage: 230, amps: 16, phases: 1, pf: 0.95, basis: 'max', derate: 100, leakMa: 0, rcdMa: 30, chainMax: 0, linkAmps: 0, autoNumber: true, mainsA: 0, multi: 'direct', multiCircuits: 6, multiAmps: 16 },
     cabling: newCablingMethod(),
+    syn: newSyn(),       // synoptic (devices, links, groups, pages) — see devices.js
+    racks: [],           // rack plans: [{ id, name, u, depth, width, kind, items }]
     style: defaultStyle(),
     outputs: [out],
     surfaces: [],
@@ -1047,6 +1159,40 @@ export function sliceRect(sl) {
   return { x: sl.x, y: sl.y, w: d.dw, h: d.dh };
 }
 
+/** Virtual-tile keys mapped onto another screen: 'same' | 'h' (mirror left/right) | 'v' (mirror top/bottom) | 'hv'.
+ *  The target grid decides the mirror axis (keys outside it are dropped). */
+export function mapVirtual(keys, src, dst, mode = 'same') {
+  const td = tileInfo(dst || src);
+  const out = new Set();
+  for (const k of keys || []) {
+    let [c, r] = k.split(',').map(Number);
+    if (mode === 'h' || mode === 'hv') c = td.cols - 1 - c;
+    if (mode === 'v' || mode === 'hv') r = td.rows - 1 - r;
+    if (c >= 0 && r >= 0 && c < td.cols && r < td.rows) out.add(c + ',' + r);
+  }
+  return [...out];
+}
+/** Real (non-virtual) tiles of a screen as a few rectangles, in screen px: row runs merged with identical runs below
+ *  (an L-shaped screen → 2 rectangles). Used by the Resolume export « cut on the real tiles ». */
+export function realRects(s) {
+  const ti = tileInfo(s), virt = new Set(s.virtual || []);
+  if (!virt.size) return [{ x: 0, y: 0, w: s.w, h: s.h }];
+  const X = (c) => Math.min(s.w, Math.round(c * ti.tw)), Y = (r) => Math.min(s.h, Math.round(r * ti.th));
+  const rects = []; let open = [];                 // open: { c0, c1, r0 } runs still growing downwards
+  for (let r = 0; r <= ti.rows; r++) {
+    const runs = [];
+    if (r < ti.rows) { let c0 = -1; for (let c = 0; c <= ti.cols; c++) { const real = c < ti.cols && !virt.has(c + ',' + r); if (real && c0 < 0) c0 = c; if (!real && c0 >= 0) { runs.push([c0, c]); c0 = -1; } } }
+    const next = [];
+    for (const o of open) {
+      const i = runs.findIndex(([a, b]) => a === o.c0 && b === o.c1);
+      if (i >= 0) { next.push(o); runs.splice(i, 1); } else rects.push({ x: X(o.c0), y: Y(o.r0), w: X(o.c1) - X(o.c0), h: Y(r) - Y(o.r0) });
+    }
+    for (const [a, b] of runs) next.push({ c0: a, c1: b, r0: r });
+    open = next;
+  }
+  return rects;
+}
+
 /** Tile geometry of a screen. */
 export function tileInfo(s) {
   const t = s.tile || {};
@@ -1096,12 +1242,40 @@ function deepAssign(target, src) {
 export const GLOBAL_STYLE_KEYS = ['blendView', 'info', 'infoScale', 'infoColor', 'infoBg', 'footer', 'footerTemplate', 'footerScale', 'footerColor', 'footerCorner', 'footerLogo', 'footerLogoId'];
 
 /** Effective style of a surface = project style + surface overrides. */
-export function effStyle(p, s) {
+/** Style of a surface as stored: project style + its own overrides (what the panels edit). */
+export function effStyleRaw(p, s) {
   const o = s && s.style;
   if (!o || !Object.keys(o).length) return p.style;
   const r = { ...p.style, ...o };
   for (const k of GLOBAL_STYLE_KEYS) r[k] = p.style[k];
   r.anim = { ...p.style.anim, ...(o.anim || {}) };
+  return r;
+}
+// Display layers (v1.50.34): project-wide master switches over the look, toggled from « Affichage » / Alt+1…9 and saved
+// in presets. They never touch the stored settings: switching a layer back on restores the look exactly as it was.
+export const DISP_LAYERS = ['map', 'guides', 'labels', 'num', 'cabling', 'power', 'anim', 'logos', 'info'];
+const DISP_OFF = {
+  guides: { grid: false, tileX: false, tileMarks: 'none', outerCircles: false, diagonals: false, circle: false, cornerCircles: false, axis: false, cornerMarkers: false },
+  labels: { labelShape: 'none', showName: false, showSize: false, showPhysical: false },
+  logos: { logoSlots: [], textSlots: [] },
+  info: { info: false, footer: false }
+};
+export function dispOf(p) { return (p && p.style && p.style.disp) || {}; }
+/** Is a display layer shown? map / guides / labels / logos / info: master switch (on by default); num / cabling / power / anim: the project setting. */
+export function layerOn(p, k) {
+  const st = p.style, d = dispOf(p);
+  if (k === 'num') return !!st.numbering && st.numbering !== 'none';
+  if (k === 'cabling') return !!st.cabling;
+  if (k === 'power') return !!st.powerPath;
+  if (k === 'anim') return !!(st.anim && st.anim.enabled);
+  return d[k] !== false;
+}
+export function effStyle(p, s) {
+  const r0 = effStyleRaw(p, s), d = dispOf(p);
+  if (d.map !== false && d.guides !== false && d.labels !== false && d.logos !== false && d.info !== false) return r0;
+  const r = { ...r0 };
+  if (d.map === false) r.mapOff = true;
+  for (const k of ['guides', 'labels', 'logos', 'info']) if (d[k] === false) Object.assign(r, DISP_OFF[k]);
   return r;
 }
 
@@ -1117,6 +1291,7 @@ function migrateStyle(st) {
 /** Fill missing fields so older / hand-edited files keep working. */
 export function normalizeProject(raw) {
   const base = newProject();
+  if (raw && raw._views && !raw.viewerOnly) { raw = { ...raw }; delete raw._views; }   // plans drawn for the Viewer: rebuilt at each save, never edited
   const p = {
     ...base,
     ...raw,
@@ -1124,10 +1299,12 @@ export function normalizeProject(raw) {
     grid: { ...base.grid, ...(raw.grid || {}) },
     processor: { ...base.processor, ...(raw.processor || {}), ...(raw.processor && !('headroom' in raw.processor) ? { headroom: 100 } : {}) },   // older files: no headroom (same ports as before)
     power: { ...base.power, ...(raw.power || {}), ...(raw.power && !('autoNumber' in raw.power) ? { autoNumber: false } : {}) },   // older files: circuits numbered per screen
-    cabling: newCablingMethod(raw.cabling || {}),
+    cabling: newCablingMethod(raw.cabling ? { wholeLines: false, followData: true, pFlow: 'rows', pCorner: 'bl', ...raw.cabling } : {}),   // a saved method keeps its older defaults
+    syn: newSyn(raw.syn || {}),
+    racks: Array.isArray(raw.racks) ? raw.racks.map((r) => newRack(r)) : [],
     style: migrateStyle(deepAssign(defaultStyle(), raw.style || {})),
     outputs: (raw.outputs && raw.outputs.length ? raw.outputs : base.outputs).map((o) => newOutput(o)),
-    surfaces: (raw.surfaces || []).map((s) => { const x = newSurface(s); x.style = migrateStyle({ ...(s.style || {}) }); return x; }),
+    surfaces: (raw.surfaces || []).map((s) => { const x = newSurface({ ...s, data: { balance: false, wholeLines: false, ...(s.data || {}) }, power: { flow: 'rows', start: 'bl', balance: false, wholeLines: false, ...(s.power || {}) } }); x.style = migrateStyle({ ...(s.style || {}) }); return x; }),   // saved projects keep the cabling they had (older defaults)
     slices: [],
     logos: (raw.logos || []).filter((l) => l && l.id).map((l) => ({ id: l.id, name: l.name || 'Logo', data: l.data || null })),
     gradient: newGradient(raw.gradient || {}),
@@ -1166,6 +1343,7 @@ export function normalizeProject(raw) {
   });
   p.projectors.forEach((pj) => { if (pj.out && !outs.has(pj.out)) pj.out = ''; });
   if (!raw.surfaces) { p.surfaces = base.screens; p.slices = base.slices.map((s) => ({ ...s, out: p.outputs[0].id })); }
+  for (const sf of p.surfaces || []) projPatternFix(sf);   // projection screens: alignment patterns, not LED cabinets
   return p;
 }
 
@@ -1218,7 +1396,118 @@ export function dataChain(s, processor) {
   if (cap.chain > 0) perPort = Math.min(perPort, cap.chain);
   const userChain = toInt(d.chainMax, 0) > 0 ? toInt(d.chainMax, 0) : toInt((processor || {}).chainMax, 0);   // cabinet maker's limit per data chain (surface, else project)
   if (userChain > 0) perPort = Math.min(perPort, userChain);
-  return { ports: buildChain(s, d, perPort), tilePx, portPx, perPort };
+  return { ports: d.mode === 'manual' && Array.isArray(d.manual) ? manualChain(s, d.manual) : buildChain(s, d, perPort), tilePx, portPx, perPort, manual: d.mode === 'manual' };
+}
+
+/**
+ * Hand-made cabling (data ports or power circuits): lists of tiles [c, r] in cable order, as drawn in the cabling
+ * editor (selection + pattern, NovaStar-style, or click by click). Tiles outside the grid, virtual tiles and repeats
+ * (a tile in two chains: the first wins) are dropped. Returns [[{c, r}, …], …] like buildChain.
+ */
+export function manualChain(s, manual) {
+  const ti = tileInfo(s);
+  const virt = new Set(s.virtual || []), seen = new Set();
+  const out = [], src = [];
+  (manual || []).forEach((chain, ci) => {
+    const port = [];
+    for (const q of chain || []) {
+      const c = Math.round(Array.isArray(q) ? q[0] : q.c), r = Math.round(Array.isArray(q) ? q[1] : q.r);
+      const k = c + ',' + r;
+      if (!(c >= 0 && r >= 0 && c < ti.cols && r < ti.rows) || virt.has(k) || seen.has(k)) continue;
+      seen.add(k); port.push({ c, r });
+    }
+    if (port.length) { out.push(port); src.push(ci); }
+  });
+  out.src = src;   // original index (in the stored list) of every kept chain
+  return out;
+}
+/** Tiles of a surface not in any chain of a hand-made cabling (to show / warn). */
+export function manualMissing(s, chains) {
+  const ti = tileInfo(s), virt = new Set(s.virtual || []), used = new Set();
+  for (const ch of chains) for (const q of ch) used.add(q.c + ',' + q.r);
+  const out = [];
+  for (let r = 0; r < ti.rows; r++) for (let c = 0; c < ti.cols; c++) { const k = c + ',' + r; if (!virt.has(k) && !used.has(k)) out.push({ c, r }); }
+  return out;
+}
+/**
+ * Ports / circuits shared by several screens (hand-made cabling across a multi-selection or a group, e.g. the two halves
+ * of a ring): every screen keeps its own pieces of cable (manual lists) and `manualCont[i] = { sid, i }` says that piece i
+ * continues piece i of screen sid (same physical port / circuit). One port is counted, numbered and loaded once.
+ * chainLinks(p, s, kind) → for every chain of s (dataChain / powerChain order): { sid, k } of the piece it continues, or null.
+ */
+const kindObj = (s, kind) => (kind === 'data' ? s.data : s.power) || {};
+const kindChains = (p, s, kind) => (kind === 'data' ? dataChain(s, p.processor).ports : powerChain(s, p.power, p.cabling).circuits);
+export function chainLinks(p, s, kind) {
+  const o = kindObj(s, kind);
+  if (!s || s.kind === 'proj' || o.mode !== 'manual' || !Array.isArray(o.manualCont) || !o.manualCont.some(Boolean)) return kindChains(p, s, kind).map(() => null);
+  const src = manualChain(s, o.manual).src;
+  return src.map((ci) => {
+    const c = o.manualCont[ci];
+    if (!c || !c.sid || c.sid === s.id) return null;
+    const ps = getSurface(p, c.sid);
+    if (!ps || ps.kind === 'proj' || kindObj(ps, kind).mode !== 'manual') return null;
+    const pk = manualChain(ps, kindObj(ps, kind).manual).src.indexOf(c.i);
+    return pk < 0 ? null : { sid: c.sid, k: pk };
+  });
+}
+/** Every shared cable of the project: { [kind]: Map('sid:k' → { root: {sid, k}, index: tiles before this piece, total, next }) }.
+ *  Cached per project object and invalidated when the cabling of a screen changes. */
+const _linkCache = new WeakMap();
+export function chainGraph(p, kind) {
+  const sig = p.surfaces.map((s) => { const o = kindObj(s, kind); return s.id + (o.mode === 'manual' ? JSON.stringify([o.manual, o.manualCont]) : '') + (s.cols || '') + 'x' + (s.rows || '') + s.w + 'x' + s.h; }).join('|');
+  let c = _linkCache.get(p); if (!c) { c = {}; _linkCache.set(p, c); }
+  if (c[kind] && c[kind].sig === sig) return c[kind].map;
+  const map = new Map(), parent = new Map(), kids = new Map(), len = new Map();
+  for (const s of p.surfaces) {
+    if (s.kind === 'proj') continue;
+    const ch = kindChains(p, s, kind), ln = chainLinks(p, s, kind);
+    ch.forEach((x, k) => { len.set(s.id + ':' + k, x.length); if (ln[k]) { const pk = ln[k].sid + ':' + ln[k].k; if (!kids.has(pk)) { parent.set(s.id + ':' + k, pk); kids.set(pk, s.id + ':' + k); } } });
+  }
+  for (const key of len.keys()) {
+    if (parent.has(key)) continue;   // roots only, then walk down
+    let cur = key, index = 0; const seen = new Set(), pieces = [];
+    while (cur && !seen.has(cur)) { seen.add(cur); pieces.push([cur, index]); index += len.get(cur) || 0; cur = kids.get(cur); }
+    const [rs, rk] = key.split(':');
+    pieces.forEach(([pk, idx], j) => map.set(pk, { root: { sid: rs, k: +rk }, index: idx, total: index, next: j < pieces.length - 1 ? pieces[j + 1][0] : null, prev: j ? pieces[j - 1][0] : null }));
+  }
+  // pieces caught in a loop (A → B → A): treated as their own root
+  for (const key of len.keys()) if (!map.has(key)) { const [rs, rk] = key.split(':'); map.set(key, { root: { sid: rs, k: +rk }, index: 0, total: len.get(key) || 0, next: null, prev: null }); }
+  c[kind] = { sig, map };
+  return map;
+}
+/** For every chain of s: { root, index, total, next, prev, own } (own = the chain starts here: it gets its own port / circuit number). */
+export function chainInfo(p, s, kind) {
+  const g = chainGraph(p, kind);
+  return kindChains(p, s, kind).map((x, k) => { const e = g.get(s.id + ':' + k) || { root: { sid: s.id, k }, index: 0, total: x.length, next: null, prev: null }; return { ...e, own: e.root.sid === s.id && e.root.k === k && !e.prev }; });
+}
+/** Number of ports / circuits that start on s (pieces continuing another screen's cable are not counted). */
+export function ownChainCount(p, s, kind) {
+  if (s.kind === 'proj') return 0;
+  const o = kindObj(s, kind);
+  if (o.mode !== 'manual' || !Array.isArray(o.manualCont) || !o.manualCont.some(Boolean)) return kindChains(p, s, kind).length;
+  return chainInfo(p, s, kind).filter((x) => x.own).length;
+}
+/** Index of chain k among the chains that start on s. */
+function ownIndex(p, s, kind, k) { return chainInfo(p, s, kind).slice(0, k).filter((x) => x.own).length; }
+/**
+ * Order of a set of tiles for a NovaStar-style pattern: start corner (tl | tr | bl | br), flow rows | cols,
+ * pattern serpentine (back and forth) | zigzag (every line from the same side).
+ */
+export function patternOrder(tiles, start = 'tl', flow = 'rows', pattern = 'serpentine') {
+  const list = tiles.map((q) => (Array.isArray(q) ? { c: q[0], r: q[1] } : { c: q.c, r: q.r }));
+  const byRows = flow !== 'cols';
+  const fromRight = start === 'tr' || start === 'br', fromBottom = start === 'bl' || start === 'br';
+  const lineKey = (q) => (byRows ? q.r : q.c), posKey = (q) => (byRows ? q.c : q.r);
+  const lines = [...new Set(list.map(lineKey))].sort((a, b) => a - b);
+  if (byRows ? fromBottom : fromRight) lines.reverse();
+  const out = [];
+  lines.forEach((ln, i) => {
+    let fwd = byRows ? !fromRight : !fromBottom;
+    if (pattern === 'serpentine' && i % 2 === 1) fwd = !fwd;
+    const row = list.filter((q) => lineKey(q) === ln).sort((a, b) => (fwd ? posKey(a) - posKey(b) : posKey(b) - posKey(a)));
+    out.push(...row);
+  });
+  return out;
 }
 
 /** Power circuits: cabinets per circuit = perCircuit, or floor(V*A / Wmax). */
@@ -1235,18 +1524,37 @@ export function powerChain(s, power, method = null) {
   let per = toInt(pw.perCircuit, 0);
   const limits = powerLimits(s, power);
   if (per <= 0) per = limits.per;
+  // hand-made circuits stand even when the capacity is unknown (no power data for the cabinet)
+  if (pw.mode === 'manual' && Array.isArray(pw.manual) && per <= 0) return { circuits: manualChain(s, pw.manual), per: 0, limits, path: pw, manual: true };
   if (per <= 0) return { circuits: [], per: 0, limits };
   // the power path follows the data path only while the surface keeps the project's power path; a surface with its own
   // power settings (sens / motif / départ / équilibrage / lignes entières) is laid out exactly as set
   const path = method && method.followData && s.data && powerFollowsMethod(method, s)
     ? { ...pw, flow: s.data.flow, pattern: s.data.pattern === 'straight' ? 'serpentine' : s.data.pattern, start: s.data.start, balance: !!s.data.balance, wholeLines: !!s.data.wholeLines }
     : pw;
-  return { circuits: buildChain(s, path, Math.max(1, per)), per, limits, path };
+  if (pw.mode === 'manual' && Array.isArray(pw.manual)) return { circuits: manualChain(s, pw.manual), per, limits, path: pw, manual: true };
+  const rp = resolvePowerFlow(s, path, per);
+  return { circuits: buildChain(s, rp, Math.max(1, per)), per, limits, path: rp, auto: path.flow === 'auto' };
+}
+/**
+ * Power path 'auto': by columns (each column cut in even parts: 16 cabinets high on 10 per circuit → 8 + 8; short
+ * columns packed whole, two by two…) unless a column is under half a circuit (4 high on 10) — then by rows. Balanced,
+ * whole lines, from the chosen corner; every circuit starts on the feed side when it holds one line or less.
+ */
+export function resolvePowerFlow(s, path, per) {
+  if (!path || path.flow !== 'auto') return path;
+  const ti = tileInfo(s);
+  const flow = per > 0 && ti.rows < per / 2 ? 'rows' : 'cols';
+  // a circuit holding at most one line (or part of one) starts every line from the feed side (zigzag: each circuit
+  // starts at the top for columns); circuits packing several short lines snake through them (serpentine)
+  const lineLen = flow === 'cols' ? ti.rows : ti.cols;
+  const pattern = per > 0 && lineLen * 2 > per ? 'zigzag' : 'serpentine';
+  return { ...path, flow, pattern, balance: true, wholeLines: true };
 }
 /** Does a surface keep the project's power path (no own sens / motif / départ / équilibrage / lignes entières / dalles par circuit)? */
 export function powerFollowsMethod(method, s) {
   const md = methodSurfaceData(method || newCablingMethod()).power, x = s.power || {};
-  return x.flow === md.flow && x.pattern === md.pattern && x.start === md.start && !!x.balance === md.balance && !!x.wholeLines === md.wholeLines && !(toInt(x.perCircuit, 0) > 0);
+  return x.mode !== 'manual' && x.flow === md.flow && x.pattern === md.pattern && x.start === md.start && !!x.balance === md.balance && !!x.wholeLines === md.wholeLines && !(toInt(x.perCircuit, 0) > 0);
 }
 /** Cabinets per circuit allowed by each rule: { watts, leak, chain, per, by }. 0 = no limit from that rule. */
 export function powerLimits(s, power) {
@@ -1292,6 +1600,128 @@ export function multiOf(power) {
   if (id === 'custom') return { id, label: MULTIS.custom.label, circuits: Math.max(1, toInt(power.multiCircuits, 6)), amps: Math.max(1, toNum(power.multiAmps, 16)) };
   return { id, ...MULTIS[id] };
 }
+/**
+ * Power distribution boards (« distris ») of a project: each one has its own supply (A per phase, mono / tri) and its own
+ * outputs (n connectors of a type: Socapex = 6 circuits of 16 A, P17 32 A mono = 1 circuit…). A project can mix them
+ * (1 × 63 A tri with 4 Socapex + 2 × 32 A mono with 6 P17 16 A). The circuits take the ways in order: distri by distri,
+ * connector by connector; on a three-phase distri the ways go L1, L2, L3 in turn. No distri = the single multi setting.
+ */
+export const OUTLETS = {
+  soca16: { label: 'Socapex 19 pts (EU)', short: 'Soca', circuits: 6, amps: 16 },
+  soca20: { label: 'Socapex 19 pts (USA)', short: 'Soca', circuits: 6, amps: 20 },
+  harting6: { label: 'Harting 6 broches', short: 'Hart6', circuits: 3, amps: 16 },
+  harting10: { label: 'Harting 10 broches', short: 'Hart10', circuits: 5, amps: 16 },
+  harting16_6: { label: 'Harting 16 broches (6 circuits)', short: 'Hart16', circuits: 6, amps: 16 },
+  harting16_8: { label: 'Harting 16 broches (8 circuits)', short: 'Hart16', circuits: 8, amps: 16 },
+  harting24: { label: 'Harting 24 broches', short: 'Hart24', circuits: 12, amps: 16 },
+  p17_16_3: { label: 'P17 16 A tri', short: 'P17-16T', circuits: 3, amps: 16 },
+  p17_32_3: { label: 'P17 32 A tri', short: 'P17-32T', circuits: 3, amps: 32 },
+  p17_16_1: { label: 'P17 16 A mono', short: 'P17-16', circuits: 1, amps: 16 },
+  p17_32_1: { label: 'P17 32 A mono', short: 'P17-32', circuits: 1, amps: 32 },
+  schuko16: { label: 'Schuko / PowerCON 16 A', short: 'PC16', circuits: 1, amps: 16 },
+  custom: { label: 'Autre sortie', short: 'Out', circuits: 0, amps: 0 }
+};
+export const DISTRO_SIZES = [16, 32, 63, 125, 250, 400];
+export function newDistro(props = {}) {
+  return { id: uid('dst'), name: 'DISTRI', a: 63, ph: 3, outs: [{ type: 'soca16', n: 2 }], ...props };
+}
+/** Outputs of a distri, resolved: [{ type, label, short, n, circuits, amps }] (empty / invalid rows dropped). */
+export function distroOuts(d) {
+  return (d && Array.isArray(d.outs) ? d.outs : []).map((o) => {
+    const T = OUTLETS[o.type] || OUTLETS.custom;
+    const circuits = o.type === 'custom' || !OUTLETS[o.type] ? Math.max(0, toInt(o.circuits, 1)) : T.circuits;
+    const amps = o.type === 'custom' || !OUTLETS[o.type] ? Math.max(0, toNum(o.amps, 16)) : T.amps;
+    return { type: o.type, label: o.type === 'custom' && o.label ? o.label : T.label, short: o.type === 'custom' && o.label ? o.label : T.short, n: Math.max(0, toInt(o.n, 0)), circuits, amps };
+  }).filter((o) => o.n > 0 && o.circuits > 0);
+}
+export const hasDistros = (power) => !!(power && Array.isArray(power.distros) && power.distros.length);
+let _waysKey = '', _ways = [];
+/** Every way (one circuit) of the distris, in the order the circuits take them. */
+export function distroWays(power) {
+  if (!hasDistros(power)) return [];
+  const key = JSON.stringify(power.distros);
+  if (key === _waysKey) return _ways;
+  const out = [];
+  power.distros.forEach((d, di) => {
+    const tri = toInt(d.ph, 3) >= 3;
+    let inD = 0;
+    distroOuts(d).forEach((o, oi) => {
+      for (let c = 1; c <= o.n; c++) for (let w = 1; w <= o.circuits; w++) {
+        inD++;
+        out.push({ di, name: d.name || 'DISTRI ' + (di + 1), oi, label: o.label, short: o.short, conn: c, way: w, amps: o.amps, phase: tri ? ((inD - 1) % 3) + 1 : 0 });
+      }
+    });
+  });
+  _waysKey = key; _ways = out;
+  return out;
+}
+/** Where circuit g (1-based global number) is plugged: way of a distri, or null (not enough outputs / no distri). */
+export function circuitWay(power, g, p = null) {
+  if (p && hasDistros(power)) return distroAlloc(p).byCircuit.get(g) || null;
+  const w = distroWays(power); return w.length ? w[g - 1] || null : null;
+}
+/**
+ * Circuits → ways of the distris, for a project:
+ *  - a screen given to a distri (s.power.distro = distri id) puts its circuits on that distri first (overflow: next free way
+ *    elsewhere, flagged);
+ *  - the other circuits: in order (power.distroMode 'order': distri by distri, moving on when a distri would go over its rating) or balanced ('balance': whole screens,
+ *    heaviest first, on the distri that ends up the least loaded among those with enough free ways).
+ * Returns { byCircuit: Map(n → way), screen: Map(sid → [distri index…]), overflow: [n…] }. Cached on the inputs.
+ */
+let _allocKey = '', _alloc = null;
+export function distroAlloc(p) {
+  const pw = p.power || {};
+  const empty = { byCircuit: new Map(), screen: new Map(), overflow: [] };
+  if (!hasDistros(pw)) return empty;
+  const key = JSON.stringify([pw.distros, pw.distroMode, pw.voltage, pw.basis, pw.amps, pw.derate, pw.linkAmps, pw.leakMa, pw.rcdMa, pw.chainMax, pw.autoNumber, pw.phases,
+    p.surfaces.map((s) => [s.id, s.kind, s.w, s.h, s.tile, s.virtual, s.power, s.data && s.data.mode, s.cols, s.rows]), p.cabling]);
+  if (key === _allocKey && _alloc) return _alloc;
+  const ways = distroWays(pw);
+  const byD = pw.distros.map(() => []);
+  ways.forEach((w) => byD[w.di].push(w));
+  const free = byD.map((l) => l.slice());                 // free ways per distri, in order
+  const V = Math.max(1, toNum(pw.voltage, 230));
+  const loadW = byD.map(() => [0, 0, 0]);
+  const res = { byCircuit: new Map(), screen: new Map(), overflow: [] };
+  const take = (di, c) => { const w = free[di].shift(); if (!w) return false; res.byCircuit.set(c.n, w); loadW[di][w.phase ? w.phase - 1 : 0] += c.W; const l = res.screen.get(c.sid) || []; if (!l.includes(di)) l.push(di); res.screen.set(c.sid, l); return true; };
+  const anyFree = (c) => { for (let di = 0; di < free.length; di++) if (take(di, c)) return true; return false; };
+  // circuits of every screen (own ones, whole shared cable counted where it starts)
+  const screens = [];
+  for (const s of p.surfaces) {
+    if (s.kind === 'proj') continue;
+    const w = toNum(pw.basis === 'avg' ? (s.power.wattsAvg || s.power.wattsMax) : s.power.wattsMax, 0);
+    const ch = powerChain(s, pw, p.cabling).circuits, nums = circuitNumbers(p, s);
+    const list = ch.map((c, k) => ({ n: (nums[k] || {}).n, sid: s.id, W: ((nums[k] && nums[k].total) || c.length) * w, cont: nums[k] && nums[k].cont })).filter((c) => c.n && !c.cont).sort((a, b) => a.n - b.n);
+    if (list.length) screens.push({ s, list, W: list.reduce((a, c) => a + c.W, 0), pin: pw.distros.findIndex((d) => d.id && d.id === s.power.distro) });
+  }
+  // 1. screens given to a distri
+  for (const sc of screens) if (sc.pin >= 0) for (const c of sc.list) if (!take(sc.pin, c)) { if (anyFree(c)) res.overflow.push(c.n); }
+  // 2. the others
+  const auto = screens.filter((sc) => sc.pin < 0);
+  if (pw.distroMode === 'balance') {
+    const rating = pw.distros.map((d) => Math.max(1, toNum(d.a, 1)));
+    const tri = pw.distros.map((d) => toInt(d.ph, 3) >= 3);
+    const worstA = (di, extraW) => { const ph = loadW[di].slice(); if (tri[di]) { const per = extraW / 3; return Math.max(...ph.map((x) => x + per)) / V; } return (ph[0] + ph[1] + ph[2] + extraW) / V; };
+    for (const sc of auto.slice().sort((a, b) => b.W - a.W)) {
+      let best = -1, bestLoad = Infinity;
+      for (let di = 0; di < free.length; di++) { if (free[di].length < sc.list.length) continue; const l = worstA(di, sc.W) / rating[di]; if (l < bestLoad) { bestLoad = l; best = di; } }
+      for (const c of sc.list) { if (best >= 0 && take(best, c)) continue; anyFree(c); }
+    }
+  } else {
+    // in order, but a distri that would go over its rating hands over to the next one with room (if any)
+    const rating = pw.distros.map((d) => Math.max(1, toNum(d.a, 1)));
+    const tri = pw.distros.map((d) => toInt(d.ph, 3) >= 3);
+    const fits = (di, c) => { const w = free[di][0]; if (!w) return false; const ph = loadW[di].slice(); if (tri[di]) ph[w.phase ? w.phase - 1 : 0] += c.W; else ph[0] += c.W; const a = tri[di] ? Math.max(...ph) / V : (ph[0] + ph[1] + ph[2]) / V; return a <= rating[di]; };
+    for (const c of auto.flatMap((sc) => sc.list).sort((a, b) => a.n - b.n)) {
+      let done = false;
+      for (let di = 0; di < free.length && !done; di++) if (fits(di, c)) done = take(di, c);
+      if (!done) anyFree(c);
+    }
+  }
+  _allocKey = key; _alloc = res;
+  return res;
+}
+
 /** Standard supply ratings (A per phase) and the smallest that carries a load with 20 % headroom. */
 export const SUPPLY_SIZES = [16, 32, 63, 125, 250, 400];
 export function supplyAdvice(ampsPerPhase) {
@@ -1302,9 +1732,11 @@ export function supplyAdvice(ampsPerPhase) {
 export function powerSummary(p) {
   const pw = p.power || {};
   const V = Math.max(1, toNum(pw.voltage, 230));
-  const tri = toInt(pw.phases, 1) >= 3;
   const cs = circuitStarts(p);
-  const res = { W: 0, Wmax: 0, Wavg: 0, circuits: 0, perPhase: [0, 0, 0], circuitsPhase: [0, 0, 0], noWatts: [], limits: {}, tri };
+  const dist = hasDistros(pw);
+  const tri = toInt(pw.phases, 1) >= 3 || (dist && pw.distros.some((d) => toInt(d.ph, 3) >= 3));
+  const res = { W: 0, Wmax: 0, Wavg: 0, circuits: 0, perPhase: [0, 0, 0], circuitsPhase: [0, 0, 0], noWatts: [], limits: {}, tri, unplugged: [],
+    distros: dist ? pw.distros.map((d, di) => { const outs = distroOuts(d); return { di, name: d.name || 'DISTRI ' + (di + 1), a: toNum(d.a, 0), ph: toInt(d.ph, 3) >= 3 ? 3 : 1, tri: toInt(d.ph, 3) >= 3, outs, ways: outs.reduce((a, o) => a + o.n * o.circuits, 0), used: 0, W: 0, perPhase: [0, 0, 0], under: 0, conns: new Map(), screens: [], id: d.id }; }) : null };
   for (const s of p.surfaces) {
     if (s.kind === 'proj') continue;
     const n = Math.max(0, tileInfo(s).total);
@@ -1313,9 +1745,31 @@ export function powerSummary(p) {
     res.Wmax += n * wm; res.Wavg += n * wa;
     const w = pw.basis === 'avg' ? wa : wm;
     const ch = powerChain(s, pw, p.cabling);
-    res.circuits += ch.circuits.length;
+    res.circuits += ownChainCount(p, s, 'power');
     if (ch.limits && ch.limits.by) res.limits[ch.limits.by] = (res.limits[ch.limits.by] || 0) + 1;
-    ch.circuits.forEach((c, k) => { const ph = tri ? (cs[s.id] + k - 1) % 3 : 0; res.perPhase[ph] += c.length * w; res.circuitsPhase[ph]++; });
+    const nums = circuitNumbers(p, s);
+    ch.circuits.forEach((c, k) => {
+      const nb = nums[k] || { n: cs[s.id] + k };
+      let ph = tri ? (nb.n - 1) % 3 : 0;
+      if (dist) {   // distris: the phase of the way the circuit is plugged into
+        const wy = circuitWay(pw, nb.n, p);
+        ph = wy && wy.phase ? wy.phase - 1 : 0;
+        if (!nb.cont) { const tiles = nb.total || c.length; if (wy) { const D = res.distros[wy.di]; D.used++; D.W += tiles * w; D.perPhase[wy.phase ? wy.phase - 1 : 0] += tiles * w; if (wy.amps && wy.amps < toNum(pw.amps, 16)) D.under++; const ck = wy.oi + ':' + wy.conn; if (!D.conns.has(ck)) D.conns.set(ck, { short: wy.short, conn: wy.conn, oi: wy.oi, ns: [] }); D.conns.get(ck).ns.push(nb.n); } else res.unplugged.push(nb.n); }
+      }
+      res.perPhase[ph] += c.length * w; if (!nb.cont) res.circuitsPhase[ph]++;
+    });
+  }
+  if (dist) { const al = distroAlloc(p); res.overflow = al.overflow; for (const s of p.surfaces) { const l = al.screen.get(s.id); if (l) for (const di of l) if (res.distros[di]) res.distros[di].screens.push(s.name); } }
+  if (dist) for (const D of res.distros) {
+    D.ampsPhase = D.perPhase.map((x) => x / V);
+    D.worst = D.tri ? Math.max(...D.ampsPhase) : D.ampsPhase.reduce((a, b) => a + b, 0);
+    D.load = D.a > 0 ? D.worst / D.a : 0; D.over = D.load > 1; D.ok = D.load <= 0.8;
+    // outputs in their order, circuits as ranges (C1–C6, C9)
+    D.conns = [...D.conns.values()].sort((a, b) => a.oi - b.oi || a.conn - b.conn).map((c) => {
+      const ns = c.ns.slice().sort((a, b) => a - b), parts = [];
+      for (let i = 0; i < ns.length; i++) { let j = i; while (j + 1 < ns.length && ns[j + 1] === ns[j] + 1) j++; parts.push(j > i ? `C${ns[i]}–C${ns[j]}` : `C${ns[i]}`); i = j; }
+      return { ...c, from: ns[0], to: ns[ns.length - 1], txt: parts.join(', ') };
+    });
   }
   res.W = pw.basis === 'avg' ? res.Wavg : res.Wmax;
   res.ampsPhase = res.perPhase.map((w) => w / V);
@@ -1324,14 +1778,17 @@ export function powerSummary(p) {
   res.imbalance = tri && worst > 0 ? (worst - Math.min(...res.ampsPhase)) / worst : 0;
   // main supply check: load of the worst phase against the rating (80 % = comfortable)
   const mainsA = toNum(pw.mainsA, 0);
-  res.mains = mainsA > 0 ? { a: mainsA, load: worst / mainsA, ok: worst <= mainsA * 0.8, over: worst > mainsA, feeds: Math.ceil(worst / (mainsA * 0.8)) || 1 } : null;
+  res.mains = mainsA > 0 && !dist ? { a: mainsA, load: worst / mainsA, ok: worst <= mainsA * 0.8, over: worst > mainsA, feeds: Math.ceil(worst / (mainsA * 0.8)) || 1 } : null;
   // multicores needed (a multi carries `circuits` circuits; on three phase they are spread over the phases)
-  const mu = multiOf(pw);
+  const mu = dist ? null : multiOf(pw);
   res.multi = mu ? { ...mu, count: Math.ceil(res.circuits / mu.circuits) } : null;
   return res;
 }
 /** Phase of a circuit (1-based global circuit number) on a three-phase supply: L1, L2, L3 in turn; '' on single phase. */
-export function circuitPhase(power, g) { return toInt(power && power.phases, 1) >= 3 ? 'L' + (((g - 1) % 3) + 1) : ''; }
+export function circuitPhase(power, g, p = null) {
+  if (hasDistros(power)) { const w = circuitWay(power, g, p); return w && w.phase ? 'L' + w.phase : ''; }
+  return toInt(power && power.phases, 1) >= 3 ? 'L' + (((g - 1) % 3) + 1) : '';
+}
 
 /** Tiles of every cabling line, in chain order (virtual tiles removed; empty lines kept so serpentine stays aligned). */
 function chainLines(s, d) {
@@ -1518,7 +1975,7 @@ export function portStarts(p) {
   let total = 0;
   if (proc.autoNumber === false) {
     for (const s of p.surfaces) {
-      const n = s.kind === 'proj' ? 0 : dataChain(s, proc).ports.length;
+      const n = s.kind === 'proj' ? 0 : ownChainCount(p, s, 'data');
       const start = Math.max(1, toInt(s.data.portStart, 1));
       res[s.id] = start; total = Math.max(total, start + n - 1);
     }
@@ -1528,7 +1985,7 @@ export function portStarts(p) {
   const cap = procMainCap(proc);
   const byOut = proc.outPerProc !== false;
   const noSplit = proc.noSplit !== false;
-  const list = p.surfaces.map((s, i) => ({ s, i, o: byOut ? surfaceOutputIndex(p, s) : 0, n: s.kind === 'proj' ? 0 : dataChain(s, proc).ports.length }));
+  const list = p.surfaces.map((s, i) => ({ s, i, o: byOut ? surfaceOutputIndex(p, s) : 0, n: s.kind === 'proj' ? 0 : ownChainCount(p, s, 'data') }));
   if (byOut) list.sort((a, b) => (a.o - b.o) || (a.i - b.i));
   const fresh = (g) => ((g - 1) % cap === 0 ? g : (Math.floor((g - 1) / cap) + 1) * cap + 1);   // first port of the next processor
   let next = 1, lastOut = null;
@@ -1551,7 +2008,7 @@ export function portStarts(p) {
 export function splitScreens(p) {
   const st = portStarts(p), out = [];
   for (const s of p.surfaces) {
-    const n = s.kind === 'proj' ? 0 : dataChain(s, p.processor).ports.length;
+    const n = s.kind === 'proj' ? 0 : ownChainCount(p, s, 'data');
     if (!n) continue;
     const a = procSlot(p.processor, st[s.id]).proc, b = procSlot(p.processor, st[s.id] + n - 1).proc;
     if (a !== b) out.push({ s, from: a, to: b, n });
@@ -1585,15 +2042,33 @@ function fmtPort(p, idx, prefix) {
 /** Labels { main, backup } of every port of a surface. */
 export function portLabels(p, s) {
   const st = portStarts(p);
-  const start = st[s.id] || 1;
   const N = st.__total;
   const red = p.processor.redundancy || 'none';
-  return dataChain(s, p.processor).ports.map((_, k) => {
-    const g = start + k;
+  const lab = (g) => {
     if (red === 'processor') return { g, main: fmtPort(p, g, 'A'), backup: fmtPort(p, g, 'B') };
     if (red === 'pair') return { g, main: fmtPort(p, 2 * g - 1, ''), backup: fmtPort(p, 2 * g, '') };   // closed loop on the neighbour port (1→2, 3→4: Brompton)
     if (red === 'port') return { g, main: fmtPort(p, g, ''), backup: 'R·' + fmtPort(p, g + N, '') };
     return { g, main: fmtPort(p, g, ''), backup: null };
+  };
+  // a piece continuing another screen's cable takes the number of the screen where the port starts
+  // (cont: comes from another screen, next: goes on to another screen, off: cabinets before it on the cable, total: cabinets on the port)
+  return chainInfo(p, s, 'data').map((ci, k) => {
+    const rs = ci.own ? s : getSurface(p, ci.root.sid);
+    const g = (st[rs.id] || 1) + ownIndex(p, rs, 'data', ci.own ? k : ci.root.k);
+    const l = lab(g);
+    l.cont = !ci.own; l.next = !!ci.next; l.off = ci.index; l.total = ci.total;
+    l.fromName = ci.prev ? (getSurface(p, ci.prev.split(':')[0]) || {}).name || '' : ''; l.toName = ci.next ? (getSurface(p, ci.next.split(':')[0]) || {}).name || '' : '';
+    if (l.next) l.backup = null;   // the redundant loop leaves from the last cabinet of the whole cable
+    return l;
+  });
+}
+/** Global circuit number of every power circuit of s (a piece continuing another screen's circuit takes its number). */
+export function circuitNumbers(p, s) {
+  const cs = circuitStarts(p);
+  return chainInfo(p, s, 'power').map((ci, k) => {
+    const rs = ci.own ? s : getSurface(p, ci.root.sid);
+    return { n: (cs[rs.id] || 1) + ownIndex(p, rs, 'power', ci.own ? k : ci.root.k), cont: !ci.own, next: !!ci.next, off: ci.index, total: ci.total,
+      fromName: ci.prev ? (getSurface(p, ci.prev.split(':')[0]) || {}).name || '' : '', toName: ci.next ? (getSurface(p, ci.next.split(':')[0]) || {}).name || '' : '' };
   });
 }
 
@@ -1604,8 +2079,8 @@ export function surfaceStats(p, s) {
   const pw = s.power || {};
   return {
     tiles,
-    ports: dataChain(s, p.processor).ports.length,
-    circuits: powerChain(s, p.power, p.cabling).circuits.length,
+    ports: ownChainCount(p, s, 'data'),
+    circuits: ownChainCount(p, s, 'power'),
     wattsMax: tiles * toNum(pw.wattsMax, 0),
     wattsAvg: tiles * toNum(pw.wattsAvg, 0),
     kg: tiles * toNum(pw.kg, 0)
@@ -1617,7 +2092,7 @@ export function circuitStarts(p) {
   const res = {};
   let next = 1;
   for (const s of p.surfaces) {
-    const n = powerChain(s, p.power, p.cabling).circuits.length;
+    const n = ownChainCount(p, s, 'power');
     const start = p.power && p.power.autoNumber !== false ? next : Math.max(1, toInt(s.power && s.power.circuitStart, 1));
     res[s.id] = start;
     next = Math.max(next, start + n);
@@ -1643,12 +2118,13 @@ export function cablingSummary(p) {
   tot.effPortPx = effPortPx(p.processor);
   // load per phase (three-phase supply: circuits on L1 / L2 / L3 in turn)
   tot.phaseW = [0, 0, 0];
-  if (toInt(p.power.phases, 1) >= 3) {
+  if (toInt(p.power.phases, 1) >= 3 || hasDistros(p.power)) {
     const cs = circuitStarts(p);
     for (const s of p.surfaces) {
       if (s.kind === 'proj') continue;
       const w = toNum(p.power.basis === 'avg' ? (s.power.wattsAvg || s.power.wattsMax) : s.power.wattsMax, 0);
-      powerChain(s, p.power, p.cabling).circuits.forEach((c, k) => { tot.phaseW[(cs[s.id] + k - 1) % 3] += c.length * w; });
+      const nums = circuitNumbers(p, s);
+      powerChain(s, p.power, p.cabling).circuits.forEach((c, k) => { const g = nums[k] ? nums[k].n : cs[s.id] + k; const ph = circuitPhase(p.power, g, p); tot.phaseW[ph ? +ph.slice(1) - 1 : hasDistros(p.power) ? 0 : (g - 1) % 3] += c.length * w; });
     }
   }
   return tot;
@@ -1687,4 +2163,91 @@ export function loopDuration(p, view, maxLen = 120) {
   const lcm = 80 / g;
   if (!exact || lcm > maxLen) return { seconds: Math.max(...periods), exact: false };
   return { seconds: lcm, exact: true };
+}
+
+// ------------------------------------------------------------------ rigid transform of several screens (groups)
+/** Rotation matrix (row-major 3×3) of Euler degrees, order YXZ as in the 3D stage (R = Ry · Rx · Rz). */
+export function rotYXZ(rx, ry, rz) {
+  const D = Math.PI / 180, a = rx * D, b = ry * D, c = rz * D;
+  const ca = Math.cos(a), sa = Math.sin(a), cb = Math.cos(b), sb = Math.sin(b), cc = Math.cos(c), sc = Math.sin(c);
+  return [cb * cc + sb * sa * sc, -cb * sc + sb * sa * cc, sb * ca, ca * sc, ca * cc, -sa, -sb * cc + cb * sa * sc, sb * sc + cb * sa * cc, cb * ca];
+}
+/** Euler degrees (YXZ) of a rotation matrix: { rx, ry, rz }. */
+export function eulerYXZ(R) {
+  const D = 180 / Math.PI, sa = Math.max(-1, Math.min(1, -R[5]));
+  const rx = Math.asin(sa);
+  if (Math.abs(sa) < 0.99999) return { rx: rx * D, ry: Math.atan2(R[2], R[8]) * D, rz: Math.atan2(R[3], R[4]) * D };
+  return { rx: rx * D, ry: Math.atan2(-R[6], R[0]) * D, rz: 0 };
+}
+const mul3 = (A, B) => { const C = new Array(9); for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) C[i * 3 + j] = A[i * 3] * B[j] + A[i * 3 + 1] * B[3 + j] + A[i * 3 + 2] * B[6 + j]; return C; };
+const tr3 = (A) => [A[0], A[3], A[6], A[1], A[4], A[7], A[2], A[5], A[8]];
+/** Centre of a set of screens (middle of their positions' extent), in metres. */
+export function groupPivot(p, ids) {
+  const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (const id of ids) { const s = getSurface(p, id); if (!s) continue; ['x', 'y', 'z'].forEach((k, i) => { const v = +s.stage[k] || 0; lo[i] = Math.min(lo[i], v); hi[i] = Math.max(hi[i], v); }); }
+  return lo[0] === Infinity ? { x: 0, y: 0, z: 0 } : { x: (lo[0] + hi[0]) / 2, y: (lo[1] + hi[1]) / 2, z: (lo[2] + hi[2]) / 2 };
+}
+/** Moves a set of screens as one block. */
+export function groupTranslate(p, ids, dx, dy, dz) {
+  for (const id of ids) { const s = getSurface(p, id); if (!s) continue; s.stage.x = r4((+s.stage.x || 0) + dx); s.stage.y = r4((+s.stage.y || 0) + dy); s.stage.z = r4((+s.stage.z || 0) + dz); s.stage.placed = true; }
+}
+/** Turns a set of screens as one block around their centre: world rotation D (3×3) applied to positions and orientations. */
+export function groupRotate(p, ids, D, pivot = groupPivot(p, ids)) {
+  for (const id of ids) {
+    const s = getSurface(p, id); if (!s) continue;
+    const v = [(+s.stage.x || 0) - pivot.x, (+s.stage.y || 0) - pivot.y, (+s.stage.z || 0) - pivot.z];
+    s.stage.x = r4(pivot.x + D[0] * v[0] + D[1] * v[1] + D[2] * v[2]);
+    s.stage.y = r4(pivot.y + D[3] * v[0] + D[4] * v[1] + D[5] * v[2]);
+    s.stage.z = r4(pivot.z + D[6] * v[0] + D[7] * v[1] + D[8] * v[2]);
+    const e = eulerYXZ(mul3(D, rotYXZ(+s.stage.rx || 0, +s.stage.ry || 0, +s.stage.rz || 0)));
+    s.stage.rx = r4(e.rx); s.stage.ry = r4(e.ry); s.stage.rz = r4(e.rz); s.stage.placed = true;
+  }
+}
+/** Rotation taking the reference screen from its current orientation to (rx, ry, rz): D = Rnew · Roldᵀ. */
+export function deltaRotation(ref, rx, ry, rz) {
+  return mul3(rotYXZ(rx, ry, rz), tr3(rotYXZ(+ref.stage.rx || 0, +ref.stage.ry || 0, +ref.stage.rz || 0)));
+}
+const r4 = (v) => Math.round(v * 10000) / 10000 + 0;   // + 0: no -0
+
+// ------------------------------------------------------------------ 3D anchor point of a screen
+// The stage position of a screen is its centre; the anchor (centre or one of the 4 corners) is only how it is placed:
+// the inspector shows / edits the anchor position, rotations turn around it, the 3D gizmo sits on it.
+export const ANCHORS = ['c', 'tl', 'tr', 'bl', 'br'];
+const ANCHOR_SIGN = { c: [0, 0], tl: [-1, 1], tr: [1, 1], bl: [-1, -1], br: [1, -1] };
+/** Vector centre → anchor (m, world), from the screen's flat size and orientation (stage values st, default s.stage). */
+export function anchorOffset(p, s, a = (s.stage && s.stage.anchor) || 'c', st = s.stage) {
+  const sg = ANCHOR_SIGN[a] || ANCHOR_SIGN.c;
+  if (!sg[0] && !sg[1]) return [0, 0, 0];
+  const m = surfaceMeters(p, s), ax = stageAxes({ rx: +st.rx || 0, ry: +st.ry || 0, rz: +st.rz || 0 });
+  const hw = sg[0] * m.w / 2, hh = sg[1] * m.h / 2;
+  return [0, 1, 2].map((i) => ax.right[i] * hw + ax.up[i] * hh);
+}
+/** World position of the screen's anchor point. */
+export function anchorPos(p, s) {
+  const o = anchorOffset(p, s);
+  return { x: (+s.stage.x || 0) + o[0], y: (+s.stage.y || 0) + o[1], z: (+s.stage.z || 0) + o[2] };
+}
+/** Moves the screen so its anchor coordinate k ('x' | 'y' | 'z') equals v. */
+export function setAnchorCoord(p, s, k, v) {
+  const o = anchorOffset(p, s), i = { x: 0, y: 1, z: 2 }[k];
+  s.stage[k] = r4(v - o[i]); s.stage.placed = true;
+}
+/** Sets one rotation (rx | ry | rz, degrees) keeping the anchor point where it is. */
+export function setRotationAtAnchor(p, s, k, v) {
+  const a = anchorPos(p, s);
+  s.stage[k] = v; s.stage.placed = true;
+  const o = anchorOffset(p, s);
+  s.stage.x = r4(a.x - o[0]); s.stage.y = r4(a.y - o[1]); s.stage.z = r4(a.z - o[2]);
+}
+
+// ------------------------------------------------------------------ export signature
+// Documents (technical file, screen sheets, opening guide) are signed with the company of the Pro licence holder
+// (name + logo, set in Project › Signature); Free keeps « Video Bridge Solutions ». App setting, not saved in projects.
+let BRAND = { name: 'Video Bridge Solutions', logo: '' };
+export function setBrand(b) { BRAND = { name: String((b && b.name) || '').trim(), logo: String((b && b.logo) || '') }; }
+export function getBrand() { return BRAND; }
+/** Signature block of a document header: logo + company, then « date · Pixel2Pixel x.y ». esc: the module's HTML escaper. */
+export function brandSig(esc, date, appVersion, sep = '<br>') {
+  const b = BRAND;
+  return `${b.logo ? `<img class="p2p-blogo" src="${b.logo}" alt="">` : ''}${b.name ? `<b class="p2p-bname">${esc(b.name)}</b>${sep}` : ''}${date} · Pixel2Pixel ${esc(appVersion || '')}`;
 }

@@ -6,7 +6,7 @@ import { drawSurface, Renderer } from './js/render.js';
 import { portRows, circuitRows, safeName } from './js/export.js';
 import * as SHR from './js/share.js';
 
-const VERSION = '0.4.1';
+const VERSION = '0.6.0';
 const $ = (s, el = document) => el.querySelector(s);
 const h = (tag, attrs = {}, ...kids) => {
   const el = document.createElement(tag);
@@ -24,28 +24,30 @@ const h = (tag, attrs = {}, ...kids) => {
 // ------------------------------------------------------------------ i18n
 const DICT = {
   fr: {
-    open: 'Ouvrir un projet', demo: 'Voir le projet de démo', demoErr: 'Projet de démo indisponible', heroTitle: 'Pixel<span>2</span>Pixel Viewer', heroText: 'Les plans de câblage data et d\'alimentation de chaque écran, sur iPad ou iPhone, même sans réseau. Ouvre le fichier .p2pmap préparé dans Pixel2Pixel.',
-    drop: 'Dépose un fichier .p2pmap ici, ou touche « Ouvrir un projet ».', recent: 'Projets récents (disponibles hors ligne)', none: 'Aucun projet récent.',
+    open: 'Ouvrir un projet', demo: 'Voir le projet de démo', demoErr: 'Projet de démo indisponible', heroTitle: 'Pixel<span>2</span>Pixel Viewer', heroText: 'Les plans de câblage data et d\'alimentation de chaque écran, sur iPad ou iPhone, même sans réseau. Ouvre le fichier .p2pmap préparé dans Pixel2Pixel, ou la présentation .html reçue (iPhone / iPad : touche « Ouvrir un projet », puis choisis le fichier dans Fichiers).',
+    drop: 'Dépose un fichier .p2pmap, .p2pview ou une présentation .html ici, ou touche « Ouvrir un projet ».', recent: 'Projets récents (disponibles hors ligne)', none: 'Aucun projet récent.',
     screens: 'écrans', ports: 'ports', circuits: 'circuits', procs: 'processeurs', kw: 'kW max', tiles: 'dalles', search: 'Rechercher un écran…', noGroup: 'Sans groupe',
     data: 'Data', power: 'Alim', pattern: 'Mire', info: 'Écran', size: 'Résolution', grid: 'Dalles', model: 'Modèle', pitch: 'Pitch', phys: 'Taille', weight: 'Poids', wmax: 'Conso max',
     port: 'Port', backup: 'Secours', proc: 'Proc.', load: 'Charge', path: 'Départ → fin', circuit: 'Circuit', phase: 'Phase', multi: 'Multi', amps: 'A', watts: 'W',
     noPorts: 'Pas de câblage data pour cet écran.', noCircuits: 'Pas de circuit : la consommation des dalles n\'est pas renseignée.', fit: 'Ajuster', full: 'Plein écran', pwdTitle: 'Projet protégé', pwdText: 'Ce projet est protégé par un mot de passe. Demande-le à la personne qui te l\'a envoyé.', pwdLabel: 'Mot de passe', pwdOk: 'Ouvrir', cancel: 'Annuler', pwdBad: 'Mot de passe incorrect', badFile: 'Fichier endommagé ou modifié : il ne peut pas être ouvert', protected: 'Protégé', live: 'En direct', liveAt: 'à jour', offline: 'Hors ligne', updated: 'Projet mis à jour par le bureau d\'études (rév. {n})', shareGone: 'Ce partage a été arrêté : la dernière version reçue reste disponible.', shareErr: 'Lien de partage indisponible', noServer: 'Serveur de partage non configuré', loadingShare: 'Récupération du projet partagé…', rev: 'rév.', stage: 'Scène 3D', stageOpen: 'Voir la scène 3D', stageText: 'Mise en situation de tous les écrans, avec les points de vue enregistrés dans le projet.', views: 'Points de vue', vPersp: 'Perspective', vFront: 'Public', vFoh: 'Régie', vTop: 'Dessus', vSide: 'Côté', playSeq: 'Séquence moteurs', stopSeq: 'Stop', loading3d: 'Chargement de la 3D…', err3d: 'La 3D n\'est pas disponible sur cet appareil', screensBtn: 'Écrans', loadErr: 'Fichier illisible', opened: 'Projet ouvert', removed: 'Retiré de la liste',
-    outputs: 'Outputs', output: 'Output', outRes: 'Résolution', slices: 'Slices', screen: 'Écran', at: 'Position', inSize: 'Entrée', download: 'Télécharger (PNG)', dlDone: 'Image enregistrée', dlFail: 'Téléchargement impossible', dlBig: 'Image réduite à {w}×{h} (limite de l\'appareil)', noOutputs: 'Les outputs arrivent avec Pixel2Pixel 1.49.3 : demande une nouvelle publication au bureau d\'études.',
+    presentation: 'Présentation', presBy: 'Présentation Pixel2Pixel', presDate: 'préparée le', outputs: 'Outputs', output: 'Output', outRes: 'Résolution', slices: 'Slices', screen: 'Écran', at: 'Position', inSize: 'Entrée', download: 'Télécharger (PNG)', dlDone: 'Image enregistrée', dlFail: 'Téléchargement impossible', dlBig: 'Image réduite à {w}×{h} (limite de l\'appareil)', noOutputs: 'Les outputs arrivent avec Pixel2Pixel 1.49.3 : demande une nouvelle publication au bureau d\'études.',
     opened_at: 'ouvert le', readOnly: 'Lecture seule — les modifications se font dans Pixel2Pixel sur ordinateur.', redund: 'Redondance', mains: 'Arrivée', saved: 'Gardé sur cet appareil'
   },
   en: {
-    open: 'Open a project', demo: 'See the demo project', demoErr: 'Demo project unavailable', heroTitle: 'Pixel<span>2</span>Pixel Viewer', heroText: 'The data cabling and power plans of every screen, on iPad or iPhone, even offline. Open the .p2pmap file prepared in Pixel2Pixel.',
-    drop: 'Drop a .p2pmap file here, or tap “Open a project”.', recent: 'Recent projects (available offline)', none: 'No recent project.',
+    open: 'Open a project', demo: 'See the demo project', demoErr: 'Demo project unavailable', heroTitle: 'Pixel<span>2</span>Pixel Viewer', heroText: 'The data cabling and power plans of every screen, on iPad or iPhone, even offline. Open the .p2pmap file prepared in Pixel2Pixel, or the .html presentation you received (iPhone / iPad: tap “Open a project”, then pick the file in Files).',
+    drop: 'Drop a .p2pmap, .p2pview or .html presentation file here, or tap “Open a project”.', recent: 'Recent projects (available offline)', none: 'No recent project.',
     screens: 'screens', ports: 'ports', circuits: 'circuits', procs: 'processors', kw: 'kW max', tiles: 'cabinets', search: 'Search a screen…', noGroup: 'No group',
     data: 'Data', power: 'Power', pattern: 'Pattern', info: 'Screen', size: 'Resolution', grid: 'Cabinets', model: 'Model', pitch: 'Pitch', phys: 'Size', weight: 'Weight', wmax: 'Max power',
     port: 'Port', backup: 'Backup', proc: 'Proc.', load: 'Load', path: 'Start → end', circuit: 'Circuit', phase: 'Phase', multi: 'Multi', amps: 'A', watts: 'W',
     noPorts: 'No data cabling for this screen.', noCircuits: 'No circuit: the cabinet power is not set.', fit: 'Fit', full: 'Full screen', pwdTitle: 'Protected project', pwdText: 'This project is protected by a password. Ask the person who sent it.', pwdLabel: 'Password', pwdOk: 'Open', cancel: 'Cancel', pwdBad: 'Wrong password', badFile: 'Damaged or modified file: it cannot be opened', protected: 'Protected', live: 'Live', liveAt: 'up to date', offline: 'Offline', updated: 'Project updated by the design office (rev. {n})', shareGone: 'This share was stopped: the last version received stays available.', shareErr: 'Share link unavailable', noServer: 'Share server not configured', loadingShare: 'Fetching the shared project…', rev: 'rev.', stage: '3D stage', stageOpen: 'See the 3D stage', stageText: 'All screens in place, with the viewpoints saved in the project.', views: 'Viewpoints', vPersp: 'Perspective', vFront: 'Audience', vFoh: 'FOH', vTop: 'Top', vSide: 'Side', playSeq: 'Motor sequence', stopSeq: 'Stop', loading3d: 'Loading 3D…', err3d: '3D is not available on this device', screensBtn: 'Screens', loadErr: 'Unreadable file', opened: 'Project opened', removed: 'Removed from the list',
-    outputs: 'Outputs', output: 'Output', outRes: 'Resolution', slices: 'Slices', screen: 'Screen', at: 'Position', inSize: 'Input', download: 'Download (PNG)', dlDone: 'Image saved', dlFail: 'Download failed', dlBig: 'Image reduced to {w}×{h} (device limit)', noOutputs: 'Outputs come with Pixel2Pixel 1.49.3: ask the design office to publish again.',
+    presentation: 'Presentation', presBy: 'Pixel2Pixel presentation', presDate: 'prepared on', outputs: 'Outputs', output: 'Output', outRes: 'Resolution', slices: 'Slices', screen: 'Screen', at: 'Position', inSize: 'Input', download: 'Download (PNG)', dlDone: 'Image saved', dlFail: 'Download failed', dlBig: 'Image reduced to {w}×{h} (device limit)', noOutputs: 'Outputs come with Pixel2Pixel 1.49.3: ask the design office to publish again.',
     opened_at: 'opened', readOnly: 'Read only — edits are made in Pixel2Pixel on a computer.', redund: 'Redundancy', mains: 'Mains', saved: 'Kept on this device'
   }
 };
 let lang = (() => { try { return localStorage.getItem('p2pv.lang') || (navigator.language || 'fr').slice(0, 2); } catch (_) { return 'fr'; } })();
 if (!DICT[lang]) lang = 'en';
+Object.assign(DICT.fr, { synTitle: 'Synoptique', synText: 'Schéma de câblage des appareils, zoomable', racksTitle: 'Racks', racksText: '{n} rack(s) · faces avant et arrière', htmlFile: 'ce fichier est une page web, pas un projet. Ouvre le .p2pmap, le .p2pview ou la présentation .html exportée par Pixel2Pixel.', oldFile: 'format inconnu : ouvre un .p2pmap, un .p2pview ou une présentation .html de Pixel2Pixel.' });
+Object.assign(DICT.en, { synTitle: 'Synoptic', synText: 'Device cabling diagram, zoomable', racksTitle: 'Racks', racksText: '{n} rack(s) · front and rear', htmlFile: 'this file is a web page, not a project. Open the .p2pmap, .p2pview or the presentation .html exported by Pixel2Pixel.', oldFile: 'unknown format: open a Pixel2Pixel .p2pmap, .p2pview or presentation .html.' });
 const t = (k) => (DICT[lang] && DICT[lang][k]) || DICT.en[k] || k;
 const fmt = (n, d = 0) => (Number(n) || 0).toLocaleString(lang === 'fr' ? 'fr-FR' : 'en-GB', { maximumFractionDigits: d, minimumFractionDigits: d });
 const tileRef = (tl) => (tl ? `C${tl.c + 1}·R${tl.r + 1}` : '—');
@@ -75,17 +77,26 @@ const DB = (() => {
 })();
 
 // ------------------------------------------------------------------ state
-const S = { p: null, rec: null, screen: null, output: null, tab: 'data', q: '', view3d: false };
+const S = { p: null, rec: null, screen: null, output: null, tab: 'data', q: '', view3d: false, extra: null, rackI: 0 };
+// standalone presentation (one file, no install): the project is embedded in the page; _present = what the client may see
+const EMBED = document.getElementById('p2p-embed');
+const PRESENT = !!(EMBED && EMBED.textContent.trim().startsWith('{'));
+const can = (k) => !(S.p && S.p._present) || S.p._present[k] !== false;
+const planTabs = () => [['data', t('data')], ['power', t('power')], ['pattern', t('pattern')]].filter(([k]) => can(k));
 // 2D renderer of the app: test patterns with label / logos / texts, outputs (slices, footer). Logos decode asynchronously.
 let assetTimer = 0;
 const R2 = new Renderer(() => { clearTimeout(assetTimer); assetTimer = setTimeout(() => { if (S.p && !S.view3d) render(); }, 120); });
 function useProject(p) { R2.invalidate(); R2.brandLock = p._brandLock !== false; R2.syncLogos(p.logos || []); }
 
 function loadProject(text, name) {
+  const head = text.trimStart().slice(0, 1);
+  if (head === '<') throw new Error(t('htmlFile'));
+  if (head !== '{') throw new Error(t('oldFile'));
   const raw = JSON.parse(text);
   const p = M.normalizeProject(raw);
+  p._views = raw._views && typeof raw._views === 'object' ? raw._views : null;   // synoptic / racks drawn by the app (VBS licence)
   p.surfaces = p.surfaces.filter((s) => s.kind !== 'proj');
-  p._brandLock = raw._brandLock !== false; p._noStage = !!raw._noStage;
+  p._brandLock = raw._brandLock !== false; p._noStage = !!raw._noStage; p._present = raw._present || null;
   return p;
 }
 /** Ask a password in the page (iOS: no prompt()). Resolves null when cancelled. */
@@ -102,6 +113,21 @@ function askPassword(name, bad) {
 }
 /** Text of a .p2pmap or a protected .p2pview -> { project, meta }. rec may carry a stored password / link key. */
 async function decodeAny(text, name, rec = {}) {
+  if (SHR.isPresentationHtml(text)) {   // presentation .html (sent to the client): decrypted here, on the device
+    const info = SHR.presentationInfo(text);
+    let password = rec.password || '', bad = false, u;
+    for (;;) {
+      if (info.password && !password) { password = await askPassword(info.title || name, bad); if (password == null) return null; }
+      try { u = await SHR.unwrapPresentationHtml(text, password); break; } catch (e) {
+        if (e.code === 'password' && info.password) { password = ''; bad = true; continue; }
+        throw new Error(t('badFile'));
+      }
+    }
+    const r = await decodeAny(u.pkg, u.title || name, {});
+    if (!r) return null;
+    r.project._present = r.project._present || {};
+    return { ...r, meta: { ...(r.meta || {}), prot: info.password ? 'password' : 'present' }, password: info.password ? password : '' };
+  }
   if (!SHR.isViewerPackage(text)) return { project: loadProject(text, name), meta: null };
   const info = SHR.packageInfo(text);
   let password = rec.password || '', bad = false;
@@ -109,7 +135,7 @@ async function decodeAny(text, name, rec = {}) {
     if (info.prot === 'password' && !password) { password = await askPassword(info.name || name, bad); if (password == null) return null; }
     try {
       const r = await SHR.decodeViewerPackage(text, { password, key: rec.share ? rec.share.key : '' });
-      const p = M.normalizeProject(r.project); p.surfaces = p.surfaces.filter((s) => s.kind !== 'proj'); p.viewerOnly = true; p._brandLock = r.project._brandLock !== false; p._noStage = !!r.project._noStage;
+      const p = M.normalizeProject(r.project); p.surfaces = p.surfaces.filter((s) => s.kind !== 'proj'); p.viewerOnly = true; p._views = r.project._views && typeof r.project._views === 'object' ? r.project._views : null; p._brandLock = r.project._brandLock !== false; p._noStage = !!r.project._noStage; p._present = r.project._present || null;
       return { project: p, meta: r.meta, password };
     } catch (e) {
       if (e.code === 'password' && info.prot === 'password') { password = ''; bad = true; continue; }
@@ -123,10 +149,10 @@ async function openText(text, name, keep = true, extra = {}) {
   if (!r) return;
   const p = r.project;
   const id = extra.share ? 'share:' + extra.share.id : (name || p.name || 'projet').toLowerCase();
-  const rec = { id, name: name || p.name, project: p.name, at: Date.now(), text, screens: p.surfaces.length, prot: r.meta ? r.meta.prot : null,
+  const rec = { id, name: name || p.name, project: (p._present && p._present.title) || p.name, at: Date.now(), text, screens: p.surfaces.length, prot: r.meta ? r.meta.prot : null,
     ...(r.password ? { password: r.password } : {}), ...(extra.share ? { share: extra.share } : {}) };
   if (keep) await DB.put(rec);
-  S.p = p; S.rec = rec; S.screen = null; S.output = null; S.q = ''; S.view3d = false; ST.synced = null; S.pv = {}; useProject(p);
+  S.p = p; S.rec = rec; S.screen = null; S.output = null; S.q = ''; S.view3d = false; S.extra = null; S.rackI = 0; ST.synced = null; S.pv = {}; useProject(p);
   history.pushState({ v: 'project' }, '');
   render();
   if (rec.share) checkShare(true);
@@ -180,7 +206,7 @@ async function checkShare(force) {
 function liveBadge() {
   const el = $('#live'); if (!el) return;
   const rec = S.rec;
-  if (!S.p || !rec || (!rec.share && !rec.prot)) { el.hidden = true; return; }
+  if (!S.p || !rec || PRESENT || (!rec.share && !rec.prot)) { el.hidden = true; return; }
   el.hidden = false;
   if (!rec.share) { el.className = 'live prot'; el.textContent = '🔒 ' + t('protected'); return; }
   const on = LIVE.ok && !LIVE.gone;
@@ -194,7 +220,7 @@ window.addEventListener('online', () => checkShare(false));
 async function openFile(f) {
   if (!f) return;
   const text = await f.text();
-  await openText(text, f.name.replace(/\.(p2pmap|p2pview|vbsmap|json)$/i, ''));
+  await openText(text, f.name.replace(/\.(p2pmap|p2pview|vbsmap|json|html?)$/i, ''));
 }
 
 // ------------------------------------------------------------------ plan rendering (same engine as the desktop app)
@@ -265,14 +291,15 @@ function render() {
   const main = $('#main');
   main.className = '';
   main.innerHTML = '';
-  $('#btnBack').hidden = !S.p;
-  $('#title').textContent = S.p ? (S.screen ? S.screen.name : S.output ? S.output.name : S.view3d ? t('stage') : S.p.name) : '';
+  $('#btnBack').hidden = !S.p || (PRESENT && !S.screen && !S.output && !S.view3d && !S.extra);
+  $('#title').textContent = S.p ? (S.screen ? S.screen.name : S.output ? S.output.name : S.view3d ? t('stage') : S.extra === 'syn' ? t('synTitle') : S.extra === 'racks' ? t('racksTitle') : S.p.name) : '';
   liveBadge();
   if (ST.stage && !S.view3d) { ST.stage.deactivate(); stopSeq(); }
   if (!S.p) return renderHome(main);
   if (S.view3d) return renderStage(main);
   if (S.screen) return renderPlan(main);
   if (S.output) return renderOutputView(main);
+  if (S.extra) return renderViews(main);
   return renderProject(main);
 }
 
@@ -297,10 +324,23 @@ async function renderHome(main) {
 function renderProject(main) {
   const p = S.p;
   const sum = M.cablingSummary(p);
+  if (p._present) {   // presentation: from the standalone file or from a presentation link
+    const pr = p._present;
+    document.title = (pr.title || p.name) + ' — Pixel2Pixel';
+    main.append(h('div', { class: 'preshead' }, h('div', { class: 'grow' }, h('h1', {}, pr.title || p.name), pr.client ? h('div', { class: 'meta' }, pr.client) : null),
+      h('div', { class: 'meta r' }, `${t('presBy')}${pr.date ? ' · ' + t('presDate') + ' ' + new Date(pr.date).toLocaleDateString(lang === 'fr' ? 'fr-FR' : 'en-GB') : ''}`)));
+  }
   main.append(h('div', { class: 'kpis' },
-    kpi(p.surfaces.length, t('screens')), kpi(sum.tiles, t('tiles')), kpi(sum.ports, t('ports')), kpi(sum.procs || 0, t('procs')), kpi(sum.circuits, t('circuits')), kpi(fmt((sum.wattsMax || 0) / 1000, 1), t('kw'))));
-  if (!p._noStage) main.append(h('button', { class: 'stagecard', onclick: () => { S.view3d = true; history.pushState({ v: 'stage' }, ''); render(); } },
+    kpi(p.surfaces.length, t('screens')), kpi(sum.tiles, t('tiles')), can('data') ? kpi(sum.ports, t('ports')) : null, can('data') ? kpi(sum.procs || 0, t('procs')) : null, can('power') ? kpi(sum.circuits, t('circuits')) : null, can('power') ? kpi(fmt((sum.wattsMax || 0) / 1000, 1), t('kw')) : null));
+  if (!p._noStage && can('stage')) main.append(h('button', { class: 'stagecard', onclick: () => { S.view3d = true; history.pushState({ v: 'stage' }, ''); render(); } },
     h('div', { class: 'ic3d' }), h('div', { class: 'grow' }, h('b', {}, t('stageOpen')), h('div', { class: 'meta' }, t('stageText'))), h('span', { class: 'chev' }, '›')));
+  const V = p._views || {};
+  if (V.syn && V.syn.svg) main.append(h('button', { class: 'stagecard syn', onclick: () => { S.extra = 'syn'; history.pushState({ v: 'syn' }, ''); render(); } },
+    h('div', { class: 'icsyn' }), h('div', { class: 'grow' }, h('b', {}, t('synTitle')), h('div', { class: 'meta' }, t('synText'))), h('span', { class: 'chev' }, '›')));
+  if (Array.isArray(V.racks) && V.racks.length) main.append(h('button', { class: 'stagecard racks', onclick: () => { S.extra = 'racks'; S.rackI = 0; history.pushState({ v: 'racks' }, ''); render(); } },
+    h('div', { class: 'icrack' }), h('div', { class: 'grow' }, h('b', {}, t('racksTitle')), h('div', { class: 'meta' }, t('racksText').replace('{n}', V.racks.length))), h('span', { class: 'chev' }, '›')));
+  main.querySelectorAll('.icsyn').forEach((el) => { el.innerHTML = '<svg viewBox="0 0 24 24"><rect x="2" y="4" width="7" height="6" rx="1"/><rect x="15" y="4" width="7" height="6" rx="1"/><rect x="8.5" y="15" width="7" height="6" rx="1"/><path d="M9 7h6M5.5 10v3h13v-3M12 13v2"/></svg>'; });
+  main.querySelectorAll('.icrack').forEach((el) => { el.innerHTML = '<svg viewBox="0 0 24 24"><rect x="5" y="2" width="14" height="20" rx="1.5"/><path d="M8 6h8M8 10h8M8 14h8M8 18h8"/></svg>'; });
   const ic3d = main.querySelector('.ic3d'); if (ic3d) ic3d.innerHTML = '<svg viewBox="0 0 24 24"><path d="M12 2l9 5v10l-9 5-9-5V7z"/><path d="M12 22V12M21 7l-9 5-9-5"/></svg>';
   const search = h('input', { class: 'search', type: 'search', placeholder: t('search'), value: S.q });
   const wrap = h('div');
@@ -316,9 +356,10 @@ function renderProject(main) {
     }
   };
   search.addEventListener('input', () => { S.q = search.value; fill(); });
-  const outs = (p.outputs || []).filter((o) => M.slicesOfOutput(p, o.id).length);
+  const outs = can('outputs') ? (p.outputs || []).filter((o) => M.slicesOfOutput(p, o.id).length) : [];
+  if (!planTabs().length && !can('tables')) wrap.hidden = true, search.hidden = true;   // no screen content allowed
   const outSec = outs.length ? [h('div', { class: 'group outhead' }, `${t('outputs')} · ${outs.length}`), h('div', { class: 'cards' }, outs.map((o) => outCard(p, o)))] : [];
-  main.append(search, wrap, ...outSec, h('p', { class: 'note', style: { marginTop: '18px' } }, t('readOnly') + ` · Viewer v${VERSION} (prototype)`));
+  main.append(search, wrap, ...outSec, h('p', { class: 'note', style: { marginTop: '18px' } }, (PRESENT ? t('presBy') : t('readOnly')) + ` · Viewer v${VERSION}`));
   fill();
 }
 function outCard(p, o) {
@@ -330,21 +371,57 @@ function outCard(p, o) {
 const kpi = (v, l) => h('div', { class: 'kpi' }, h('div', { class: 'v' }, typeof v === 'number' ? fmt(v) : v), h('div', { class: 'l' }, l));
 function card(p, s) {
   const st = M.surfaceStats(p, s), ti = M.tileInfo(s);
-  const c = renderSurface(p, s, 'pattern', 260);
-  return h('button', { class: 'card', onclick: () => { S.screen = s; S.tab = S.tab || 'data'; history.pushState({ v: 'plan' }, ''); render(); } }, c,
+  const c = can('pattern') ? renderSurface(p, s, 'pattern', 260) : h('div', { class: 'nocv' });
+  return h('button', { class: 'card', onclick: () => { S.screen = s; history.pushState({ v: 'plan' }, ''); render(); } }, c,
     h('div', { class: 'grow' }, h('b', {}, s.name), h('div', { class: 'meta' }, `${s.w}×${s.h} px · ${ti.cols}×${ti.rows}`),
-      h('div', {}, h('span', { class: 'chip' }, `${st.ports} ${t('ports')}`), h('span', { class: 'chip' }, `${st.circuits} ${t('circuits')}`))));
+      h('div', {}, can('data') ? h('span', { class: 'chip' }, `${st.ports} ${t('ports')}`) : null, can('power') ? h('span', { class: 'chip' }, `${st.circuits} ${t('circuits')}`) : null)));
 }
 
 function renderPlan(main) {
   const p = S.p, s = S.screen;
-  const tabs = h('div', { class: 'seg ptabs' }, [['data', t('data')], ['power', t('power')], ['pattern', t('pattern')]].map(([k, l]) =>
-    h('button', { class: S.tab === k ? 'on' : '', onclick: () => { S.tab = k; render(); } }, l)));
-  zoomView(main, renderSurface(p, s, S.tab), { tabs, side: sidePanel(p, s), key: s.id + '|' + S.tab, download: () => downloadSurface(p, s, S.tab) });
+  const av = planTabs();
+  if (!av.length) { main.append(h('div', { class: 'plan one' }, sidePanel(p, s))); return; }
+  if (!av.some(([k]) => k === S.tab)) S.tab = av[0][0];
+  const tabs = av.length > 1 ? h('div', { class: 'seg ptabs' }, av.map(([k, l]) =>
+    h('button', { class: S.tab === k ? 'on' : '', onclick: () => { S.tab = k; render(); } }, l))) : null;
+  zoomView(main, renderSurface(p, s, S.tab), { tabs, side: sidePanel(p, s), key: s.id + '|' + S.tab, download: can('download') ? () => downloadSurface(p, s, S.tab) : null });
+}
+/** SVG (synoptic / rack drawn by the app) -> canvas for the zoom view (≤ 12 Mpx, iOS limits). Cached per drawing. */
+const SVG_CV = new Map();
+function svgCanvas(svg, key) {
+  if (SVG_CV.has(key)) return SVG_CV.get(key);
+  const pr = new Promise((ok, ko) => {
+    const vb = (svg.match(/viewBox="([-\d.e]+) ([-\d.e]+) ([\d.e]+) ([\d.e]+)"/) || []).slice(3, 5).map(Number);
+    const w0 = vb[0] || 1600, h0 = vb[1] || 1000, k = Math.min(4, scaleFor(w0, h0, MAX_SIDE, MAX_PX) * Math.max(1, 4096 / Math.max(w0, h0)));
+    const W = Math.max(1, Math.round(w0 * Math.min(k, scaleFor(w0, h0, MAX_SIDE, MAX_PX)))), H = Math.max(1, Math.round(h0 * W / w0));
+    const url = URL.createObjectURL(new Blob([svg.replace(/<svg ([^>]*?)width="[\d.]+" height="[\d.]+"/, `<svg $1width="${W}" height="${H}"`)], { type: 'image/svg+xml' }));
+    const img = new Image();
+    img.onload = () => { const c = document.createElement('canvas'); c.width = W; c.height = H; const g = c.getContext('2d'); g.fillStyle = '#0F1217'; g.fillRect(0, 0, W, H); g.drawImage(img, 0, 0, W, H); URL.revokeObjectURL(url); ok(c); };
+    img.onerror = () => { URL.revokeObjectURL(url); ko(new Error('svg')); };
+    img.src = url;
+  });
+  SVG_CV.set(key, pr);
+  pr.catch(() => SVG_CV.delete(key));
+  return pr;
+}
+/** Synoptic or racks drawn by the desktop app (VBS licence): same zoom view as the plans, PNG download. */
+async function renderViews(main) {
+  const V = (S.p && S.p._views) || {}, racks = Array.isArray(V.racks) ? V.racks : [];
+  const isSyn = S.extra === 'syn', r = isSyn ? null : racks[Math.min(S.rackI, racks.length - 1)];
+  const svg = isSyn ? V.syn && V.syn.svg : r && r.svg;
+  if (!svg) { S.extra = null; render(); return; }
+  const key = (S.rec && S.rec.id || S.p.name) + '|' + (isSyn ? 'syn' : 'rack' + S.rackI) + '|' + svg.length;
+  const wait = h('div', { class: 'note', style: { padding: '24px' } }, '…'); main.append(wait);
+  let cv; try { cv = await svgCanvas(svg, key); } catch (_) { wait.textContent = t('loadErr'); return; }
+  if (!main.isConnected || !S.extra) return;
+  wait.remove();
+  const tabs = !isSyn && racks.length > 1 ? h('div', { class: 'seg ptabs' }, racks.map((x, i) => h('button', { class: i === S.rackI ? 'on' : '', onclick: () => { S.rackI = i; render(); } }, x.name || `Rack ${i + 1}`))) : null;
+  const name = (S.p.name || 'projet') + ' - ' + (isSyn ? t('synTitle') : (r.name || 'rack'));
+  zoomView(main, cv, { tabs, side: null, key, download: can('download') ? () => saveCanvas(cv, name, true) : null });
 }
 function renderOutputView(main) {
   const p = S.p, o = S.output;
-  zoomView(main, renderOutput(p, o), { side: outputPanel(p, o), key: 'out|' + o.id, download: () => downloadOutput(p, o) });
+  zoomView(main, renderOutput(p, o), { side: outputPanel(p, o), key: 'out|' + o.id, download: can('download') ? () => downloadOutput(p, o) : null });
 }
 /** Zoomable plan: pan / pinch / double tap / wheel, full screen, fit, download. src = full image, off screen (≤ 12 Mpx). */
 function zoomView(main, src, { tabs = null, side, key, download }) {
@@ -423,13 +500,13 @@ function zoomView(main, src, { tabs = null, side, key, download }) {
     requestAnimationFrame(() => requestAnimationFrame(fit));
   };
   const fsBtn = h('button', { class: 'ic', title: t('full'), onclick: toggleFs }); fsBtn.innerHTML = document.body.classList.contains('fs') ? ICON_SHRINK : ICON_EXPAND;
-  const dlBtn = h('button', { class: 'ic', title: t('download'), 'aria-label': t('download'), onclick: download }); dlBtn.innerHTML = ICON_DOWNLOAD;
+  const dlBtn = download ? h('button', { class: 'ic', title: t('download'), 'aria-label': t('download'), onclick: download }) : null; if (dlBtn) dlBtn.innerHTML = ICON_DOWNLOAD;
   box.append(...[cv, tabs].filter(Boolean), h('div', { class: 'zoombtns' },
     dlBtn, fsBtn,
     h('button', { class: 'ic', 'aria-label': '+', onclick: () => zoomAt(1.6, W() / 2, H() / 2) }, '+'),
     h('button', { class: 'ic', 'aria-label': '−', onclick: () => zoomAt(1 / 1.6, W() / 2, H() / 2) }, '−'),
     h('button', { class: 'ic', title: t('fit'), onclick: fit }, h('span', { class: 'fit' }, '⤢'))));
-  main.append(h('div', { class: 'plan' }, box, side));
+  main.append(h('div', { class: 'plan' + (side ? '' : ' noside') }, box, side));
   const pvKey = key;
   S.pv = S.pv || {};
   const savedPv = S.pv[pvKey];
@@ -530,17 +607,18 @@ function sidePanel(p, s) {
       s.pitch ? [h('span', {}, t('pitch')), h('span', {}, fmt(s.pitch, 2) + ' mm')] : null,
       [h('span', {}, t('phys')), h('span', {}, M.physicalSize(s) || '—')],
       st.kg ? [h('span', {}, t('weight')), h('span', {}, fmt(st.kg) + ' kg')] : null,
-      st.wattsMax ? [h('span', {}, t('wmax')), h('span', {}, fmt(st.wattsMax / 1000, 2) + ' kW')] : null),
-    h('button', { class: 'btn primary block dl', onclick: () => downloadSurface(p, s, S.tab) }, `${t('download')} · ${S.tab === 'data' ? t('data') : S.tab === 'power' ? t('power') : t('pattern')}`));
-  if (S.tab === 'data' || S.tab === 'pattern') side.append(h('h2', {}, `${t('ports')} · ${st.ports}`), portsTable(p, s));
-  if (S.tab === 'power' || S.tab === 'pattern') side.append(h('h2', { style: { marginTop: '18px' } }, `${t('circuits')} · ${st.circuits}`), circuitsTable(p, s));
+      st.wattsMax && can('power') ? [h('span', {}, t('wmax')), h('span', {}, fmt(st.wattsMax / 1000, 2) + ' kW')] : null),
+    can('download') && planTabs().length ? h('button', { class: 'btn primary block dl', onclick: () => downloadSurface(p, s, S.tab) }, `${t('download')} · ${S.tab === 'data' ? t('data') : S.tab === 'power' ? t('power') : t('pattern')}`) : null);
+  if (!can('tables')) return side;
+  if (can('data') && (S.tab === 'data' || S.tab === 'pattern' || !planTabs().length)) side.append(h('h2', {}, `${t('ports')} · ${st.ports}`), portsTable(p, s));
+  if (can('power') && (S.tab === 'power' || S.tab === 'pattern' || !planTabs().length)) side.append(h('h2', { style: { marginTop: '18px' } }, `${t('circuits')} · ${st.circuits}`), circuitsTable(p, s));
   return side;
 }
 function outputPanel(p, o) {
   const sl = M.slicesOfOutput(p, o.id);
   const side = h('div', { class: 'side' }, h('h3', {}, o.name), h('div', { class: 'note' }, t('output')),
     h('div', { class: 'kv' }, h('span', {}, t('outRes')), h('span', {}, `${o.w} × ${o.h} px`), h('span', {}, t('slices')), h('span', {}, String(sl.length))),
-    h('button', { class: 'btn primary block dl', onclick: () => downloadOutput(p, o) }, t('download')));
+    can('download') ? h('button', { class: 'btn primary block dl', onclick: () => downloadOutput(p, o) }, t('download')) : null);
   if (sl.length) side.append(h('h2', { style: { marginTop: '18px' } }, `${t('slices')} · ${sl.length}`),
     h('table', {}, h('thead', {}, h('tr', {}, h('th', {}, t('screen')), h('th', {}, t('inSize')), h('th', {}, t('at')))),
       h('tbody', {}, sl.map((x) => { const d = M.sliceDims(x); return h('tr', {}, h('td', {}, h('b', {}, M.sliceName(p, x))), h('td', {}, `${Math.round(x.src.w)}×${Math.round(x.src.h)}`), h('td', {}, `${Math.round(x.x)}, ${Math.round(x.y)}${x.rot ? ' · ' + x.rot + '°' : ''}${d && (Math.round(d.ow) !== Math.round(x.src.w) || Math.round(d.oh) !== Math.round(x.src.h)) ? ' · ' + Math.round(d.ow) + '×' + Math.round(d.oh) : ''}`)); }))));
@@ -572,10 +650,16 @@ function circuitsTable(p, s) {
 // ------------------------------------------------------------------ wiring
 $('#btnBack').addEventListener('click', () => history.back());
 document.querySelectorAll('#lang button').forEach((b) => b.addEventListener('click', () => { lang = b.dataset.l; try { localStorage.setItem('p2pv.lang', lang); } catch (_) { /* private mode */ } render(); }));
-window.addEventListener('popstate', () => { document.body.classList.remove('fs'); try { if (document.fullscreenElement) document.exitFullscreen(); } catch (_) { /* none */ } if (S.screen) S.screen = null; else if (S.output) S.output = null; else if (S.view3d) S.view3d = false; else if (S.p) { S.p = null; S.rec = null; } render(); });
-if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
+window.addEventListener('popstate', () => { document.body.classList.remove('fs'); try { if (document.fullscreenElement) document.exitFullscreen(); } catch (_) { /* none */ } if (S.screen) S.screen = null; else if (S.output) S.output = null; else if (S.view3d) S.view3d = false; else if (S.extra) S.extra = null; else if (S.p && !PRESENT) { S.p = null; S.rec = null; } render(); });
+if (!PRESENT && 'serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
 window.__p2pv = { S, openText, render };
-render();
+if (PRESENT) {
+  document.body.classList.add('present');
+  const txt = EMBED.textContent.trim();
+  let nm = ''; try { nm = SHR.packageInfo(txt).name || ''; } catch (_) { /* plain project */ }
+  document.title = (nm ? nm + ' — ' : '') + 'Pixel2Pixel';
+  openText(txt, nm || 'presentation', false);
+} else render();
 // opened from a live share link (#s=<id>.<key>&g=<server>): fetch, then forget the key from the address bar
 { const sh = SHR.parseShareHash(location.hash); if (sh) { try { history.replaceState(null, '', location.pathname + location.search); } catch (_) { /* sandboxed frame */ } openShareLink(sh); } }
 window.__p2pv.SHR = SHR; window.__p2pv.checkShare = checkShare; window.__p2pv.openShareLink = openShareLink;

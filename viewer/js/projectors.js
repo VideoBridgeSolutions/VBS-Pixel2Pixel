@@ -75,6 +75,67 @@ export function projAxes(pj) {
   return { right: r, up: u, fwd: [-z[0], -z[1], -z[2]], back: z };
 }
 
+// ---- side of the screen (front / rear projection) and orientation square to a screen
+// Euler angles are YXZ (R = Ry · Rx · Rz), the convention of M.stageAxes and of the 3D view.
+const D2R = Math.PI / 180, R2D = 180 / Math.PI;
+function matYXZ(rx, ry, rz) {
+  const cx = Math.cos(rx * D2R), sx = Math.sin(rx * D2R), cy = Math.cos(ry * D2R), sy = Math.sin(ry * D2R), cz = Math.cos(rz * D2R), sz = Math.sin(rz * D2R);
+  return [[cy * cz + sy * sx * sz, -cy * sz + sy * sx * cz, sy * cx], [cx * sz, cx * cz, -sx], [-sy * cz + cy * sx * sz, sy * sz + cy * sx * cz, cy * cx]];
+}
+function eulerYXZ(m) {
+  const r6 = (v) => Math.round(v * 1e6) / 1e6, w = (a) => r6(((a * R2D) + 540) % 360 - 180);
+  const x = Math.asin(Math.max(-1, Math.min(1, -m[1][2])));
+  if (Math.abs(m[1][2]) < 0.9999999) return { rx: w(x), ry: w(Math.atan2(m[0][2], m[2][2])), rz: w(Math.atan2(m[1][0], m[1][1])) };
+  return { rx: w(x), ry: w(Math.atan2(-m[2][0], m[0][0])), rz: 0 };
+}
+const mmul = (A, B) => A.map((r) => [0, 1, 2].map((j) => r[0] * B[0][j] + r[1] * B[1][j] + r[2] * B[2][j]));
+/** +1 = projector on the audience side of the screen, -1 = behind it (rear projection). */
+export const sideOf = (pj) => (pj && pj.rear ? -1 : 1);
+/** Lens shift signs, screen frame → projector frame: ceiling turns the body over (both flip), rear turns it around (H flips). */
+export const shiftSigns = (pj) => { const c = pj && pj.ceiling ? -1 : 1; return { h: c * sideOf(pj), v: c }; };
+/** Orientation of a projector square to a screen (stage rotation st): rear = turned 180° about the screen's up axis,
+ *  ceiling = rolled 180°. Front, floor-standing: the screen's own rotation. */
+export function squareRotation(st, pj, tilt = 0, pan = 0) {
+  let m = matYXZ(st.rx || 0, st.ry || 0, st.rz || 0);
+  if (pj && pj.rear) m = mmul(m, [[-1, 0, 0], [0, 1, 0], [0, 0, -1]]);
+  // tilted / panned (lens finder « projecteur incliné »): aimed down by `tilt`°, towards the screen's left by `pan`° (screen axes)
+  if (tilt || pan) m = mmul(m, matYXZ(-tilt, pj && pj.rear ? -pan : pan, 0));
+  if (pj && pj.ceiling) m = mmul(m, [[-1, 0, 0], [0, -1, 0], [0, 0, 1]]);
+  if (pj && pj.portrait) m = mmul(m, [[0, -1, 0], [1, 0, 0], [0, 0, 1]]);   // on its side (« sur la tranche »): body right = screen up
+  return eulerYXZ(m);
+}
+/** Screen-frame lens shift (% of the image width sh / height sv on the screen) → the projector's own shifts.
+ *  Portrait body (rolled 90°): its horizontal shift moves the image up the screen, its vertical shift to the left. */
+export function bodyShift(pj, sh, sv) {
+  const sg = shiftSigns(pj), h = sg.h * sh, v = sg.v * sv;
+  return pj && pj.portrait ? { shiftH: v, shiftV: -h } : { shiftH: h, shiftV: v };
+}
+/** Inverse of bodyShift: the projector's shifts → screen frame { sh, sv }. */
+export function screenShift(pj) {
+  const sg = shiftSigns(pj), H = +pj.shiftH || 0, V = +pj.shiftV || 0;
+  const h = pj.portrait ? -V : H, v = pj.portrait ? H : V;
+  return { sh: sg.h * h, sv: sg.v * v };
+}
+/** Image aspect on the screen (width / height): portrait bodies give a portrait image. */
+export const screenAspect = (pj) => { const a = (pj.resW || 16) / (pj.resH || 9); return pj && pj.portrait ? 1 / a : a; };
+/** Stack label: '', 'dual', 'trio', '×4'. */
+export const stackLabel = (pj) => { const n = Math.max(1, +pj.stack || 1); return n === 2 ? 'dual' : n === 3 ? 'trio' : n > 3 ? '×' + n : ''; };
+/** Mirror a projector through the plane of a screen (front ↔ rear), keeping the image where it is: position reflected,
+ *  orientation reflected (x axis negated to stay a rotation), horizontal lens shift negated. Edits pj. */
+export function mirrorThroughScreen(pj, s) {
+  const sa = M.stageAxes(s.stage);
+  const n = [sa.right[1] * sa.up[2] - sa.right[2] * sa.up[1], sa.right[2] * sa.up[0] - sa.right[0] * sa.up[2], sa.right[0] * sa.up[1] - sa.right[1] * sa.up[0]];
+  const c = [s.stage.x, s.stage.y, s.stage.z];
+  const P = [pj.x, pj.y, pj.z], k = 2 * ((P[0] - c[0]) * n[0] + (P[1] - c[1]) * n[1] + (P[2] - c[2]) * n[2]);
+  const ref = (v) => { const d = 2 * (v[0] * n[0] + v[1] * n[1] + v[2] * n[2]); return [v[0] - d * n[0], v[1] - d * n[1], v[2] - d * n[2]]; };
+  const m = matYXZ(pj.rx || 0, pj.ry || 0, pj.rz || 0);
+  const col = (j) => [m[0][j], m[1][j], m[2][j]];
+  const x = ref(col(0)).map((v) => -v), y = ref(col(1)), z = ref(col(2));
+  const r6 = (v) => Math.round(v * 1e6) / 1e6;
+  Object.assign(pj, { x: r6(P[0] - k * n[0]), y: r6(P[1] - k * n[1]), z: r6(P[2] - k * n[2]), ...eulerYXZ([[x[0], y[0], z[0]], [x[1], y[1], z[1]], [x[2], y[2], z[2]]]), shiftH: r6(-(pj.shiftH || 0)) });
+  return pj;
+}
+
 /** Frustum per unit of depth: { l, r, b, t } (image plane at depth 1), aspect, centre offsets. */
 export function frustum(pj) {
   const tr = Math.max(0.05, +pj.tr || 1);
@@ -121,10 +182,11 @@ export function hitScreen(p, pj) {
 /** Image size, brightness and pixel size at a given axial depth (m). */
 export function imageAt(pj, depth, { gain = 1, cosI = 1, axial = 1 } = {}) {
   const f = frustum(pj);
-  const W = depth / f.tr, H = W / f.aspect;
+  const Wb = depth / f.tr, Hb = Wb / f.aspect;                  // the body's own image
+  const W = pj.portrait ? Hb : Wb, H = pj.portrait ? Wb : Hb;    // as seen on the screen
   const lm = (+pj.lumens || 0) * Math.max(1, +pj.stack || 1);
   const lux = W > 0 && H > 0 ? lm / (W * H) * cosI / Math.max(0.2, axial) : 0;
-  return { W, H, lux, nits: lux * gain / Math.PI, pxmm: W / (pj.resW || 1) * 1000, dist: depth };
+  return { W, H, lux, nits: lux * gain / Math.PI, pxmm: Wb / (pj.resW || 1) * 1000, dist: depth };
 }
 
 /** Full report for the inspector: hit screen + image + throw check against the lens range. */
@@ -147,33 +209,50 @@ export function lensesFor(model, tr) { return (model && model.lenses || []).filt
  */
 export function planBlend(o) {
   const cols = Math.max(1, Math.round(o.cols || 1)), rows = Math.max(1, Math.round(o.rows || 1));
-  const resW = Math.max(16, Math.round(o.resW)), resH = Math.max(16, Math.round(o.resH));
-  const ox = cols > 1 ? Math.round(resW * M.clamp(+o.overlap || 0, 0, 0.5)) : 0;
+  const bW = Math.max(16, Math.round(o.resW)), bH = Math.max(16, Math.round(o.resH));
+  const portrait = !!o.portrait;                          // bodies on their side: each one covers resH × resW on the screen
+  const resW = portrait ? bH : bW, resH = portrait ? bW : bH;
+  let ox = cols > 1 ? Math.round(resW * M.clamp(+o.overlap || 0, 0, 0.5)) : 0;
   const oy = rows > 1 ? Math.round(resH * M.clamp(o.overlapV != null ? +o.overlapV : (+o.overlap || 0), 0, 0.5)) : 0;
   const physW = Math.max(0.1, +o.physW || 1), physH = Math.max(0.1, +o.physH || 1);
-  const W = cols * resW - (cols - 1) * ox;                 // content width = covered width
+  // fit 'height': the projectors' raster height covers the screen height exactly; the horizontal overlap follows
+  // (what is left over across the width), instead of the width being covered with a fixed overlap ('width')
+  const fitH = o.fit === 'height';
+  let gapH = 0;
+  if (fitH) {
+    const Hc0 = rows * resH - (rows - 1) * oy;
+    const Wneed = Math.round(Hc0 * physW / physH);
+    if (o.overlapFixed) gapH = Math.max(0, Wneed - (cols * resW - (cols - 1) * ox));   // overlap imposed: the row may spill past the sides
+    else if (cols > 1) { ox = Math.round((cols * resW - Wneed) / (cols - 1)); if (ox < 0) { gapH = -ox; ox = 0; } }
+    else gapH = Math.max(0, Wneed - resW);
+  }
+  const W = fitH ? Math.round((rows * resH - (rows - 1) * oy) * physW / physH) : cols * resW - (cols - 1) * ox;   // content width
   const H = Math.max(1, Math.round(W * physH / physW));    // screen content height (square pixels)
   const Hc = rows * resH - (rows - 1) * oy;               // covered height
   const offY = Math.round((Hc - H) / 2);                   // > 0: image spills above / below the screen, < 0: not covered
   const mx = physW / W;                                    // metres per pixel on the screen
   const cells = [];
   for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
-    const x0 = c * (resW - ox), y0 = r * (resH - oy) - offY;   // raster origin in screen px
+    const x0 = c * (resW - ox) + Math.round((W - (cols * resW - (cols - 1) * ox)) / 2), y0 = r * (resH - oy) - offY;   // raster origin in screen px (fit height: row centred)
     const sy0 = Math.max(0, y0), sy1 = Math.min(H, y0 + resH);
-    if (sy1 <= sy0) continue;
+    const sx0 = Math.max(0, x0), sx1 = Math.min(W, x0 + resW);   // clipped to the screen (fit height: rounding at the edges)
+    if (sy1 <= sy0 || sx1 <= sx0) continue;
     cells.push({
-      c, r, src: { x: x0, y: sy0, w: resW, h: sy1 - sy0 }, out: { x: 0, y: sy0 - y0 },
+      c, r, src: { x: sx0, y: sy0, w: sx1 - sx0, h: sy1 - sy0 },
+      // portrait: the slice turns 90° clockwise on the landscape output, the screen's top lands on the raster's right
+      out: portrait ? { x: bW - (sy0 - y0) - (sy1 - sy0), y: sx0 - x0 } : { x: sx0 - x0, y: sy0 - y0 },
       blend: { l: c > 0 ? ox : 0, r: c < cols - 1 ? ox : 0, t: r > 0 && y0 >= 0 ? oy : 0, b: r < rows - 1 && y0 + resH <= H ? oy : 0 },
       dx: (x0 + resW / 2 - W / 2) * mx, dy: -(y0 + resH / 2 - H / 2) * mx
     });
   }
   const imgW = resW * mx, imgH = resH * mx;
-  const tr = o.tr > 0 ? +o.tr : (o.dist > 0 ? o.dist / imgW : 1.5);
-  const dist = tr * imgW;
+  const imgB = portrait ? imgH : imgW;                     // width of the body's image: what the throw ratio is about
+  const tr = o.tr > 0 ? +o.tr : (o.dist > 0 ? o.dist / imgB : 1.5);
+  const dist = tr * imgB;
   const lm = (+o.lumens || 0) * Math.max(1, +o.stack || 1);
   // overlaps receive two (four in corners) projectors: report the single-projector level, the blend evens it out
   const lux = lm / (imgW * imgH);
-  return { cols, rows, resW, resH, ox, oy, W, H, Hc, offY, mx, imgW, imgH, tr, dist, lux, nits: lux * (+o.gain || 1) / Math.PI, cells, physW, physH,
+  return { cols, rows, resW, resH, bodyW: bW, bodyH: bH, portrait, fit: fitH ? 'height' : 'width', gapH, spillH: fitH ? Math.max(0, Math.round(((cols * resW - (cols - 1) * ox) - W) / 2)) : 0, overlapPct: resW ? ox / resW * 100 : 0, ox, oy, W, H, Hc, offY, mx, imgW, imgH, tr, dist, lux, nits: lux * (+o.gain || 1) / Math.PI, cells, physW, physH,
     underCover: offY < 0, spillPx: Math.max(0, offY) };
 }
 
@@ -185,7 +264,7 @@ export function planBlend(o) {
 export function applyBlend(p, surfaceId, plan, o) {
   const s = M.getSurface(p, surfaceId);
   if (!s) return [];
-  s.kind = 'proj'; s.phys = { w: plan.physW, h: plan.physH }; s.w = plan.W; s.h = plan.H; s.wholeTiles = false; s.panel = null; s.pitch = 0;
+  s.kind = 'proj'; M.projPatternFix(s); s.phys = { w: plan.physW, h: plan.physH }; s.w = plan.W; s.h = plan.H; s.wholeTiles = false; s.panel = null; s.pitch = 0;
   s.gain = +o.gain || 1;
   const cell = Math.max(32, Math.round(plan.resW / 8));
   s.tile = { mode: 'px', tw: cell, th: cell, cols: 1, rows: 1 };
@@ -205,18 +284,22 @@ export function applyBlend(p, surfaceId, plan, o) {
   const ids = [];
   plan.cells.forEach((cl, i) => {
     const name = `${base} ${startN + i}`;
-    const out = M.newOutput({ name, w: plan.resW, h: plan.resH, proj: true });
+    const pr = !!plan.portrait, bW = plan.bodyW || plan.resW, bH = plan.bodyH || plan.resH;
+    const out = M.newOutput({ name, w: bW, h: bH, proj: true });   // the projector's own (landscape) raster
     p.outputs.push(out);
-    p.slices.push(M.newSlice(s, out.id, { src: cl.src, x: cl.out.x, y: cl.out.y, blend: cl.blend }));
+    p.slices.push(M.newSlice(s, out.id, { src: cl.src, x: cl.out.x, y: cl.out.y, rot: pr ? 90 : 0, blend: cl.blend }));
     const sv = +o.shiftV || 0;
     const dy = cl.dy - sv / 100 * plan.imgH;              // lens shift up = projector lower, image unchanged
-    const pos = [s.stage.x + sa.right[0] * cl.dx + sa.up[0] * dy + n[0] * plan.dist, s.stage.y + sa.right[1] * cl.dx + sa.up[1] * dy + n[1] * plan.dist, s.stage.z + sa.right[2] * cl.dx + sa.up[2] * dy + n[2] * plan.dist];
+    const side = s.rearProj ? -1 : 1;                     // rear-projection screen: projectors behind it
+    const pos = [0, 1, 2].map((k) => [s.stage.x, s.stage.y, s.stage.z][k] + sa.right[k] * cl.dx + sa.up[k] * dy + n[k] * plan.dist * side);
+    const rot = squareRotation(s.stage, { rear: !!s.rearProj, portrait: pr });
+    const bs = pr ? bodyShift({ rear: !!s.rearProj, portrait: true }, 0, sv) : { shiftH: 0, shiftV: sv };
     const pj = M.newProjector({
       name, surf: surfaceId, out: out.id, lib: lib ? lib.id : '', brand: lib ? lib.brand : '', model: lib ? lib.model : (o.modelName || ''),
-      resW: plan.resW, resH: plan.resH, lumens: +o.lumens || (lib && lib.lumens) || 0, stack: Math.max(1, +o.stack || 1),
+      resW: bW, resH: bH, portrait: pr, lumens: +o.lumens || (lib && lib.lumens) || 0, stack: Math.max(1, +o.stack || 1),
       lens: lens ? lens.id : '', trMin: lens ? lens.trMin : plan.tr, trMax: lens ? (lens.trMax || lens.trMin) : plan.tr, tr: r3(plan.tr),
-      shiftH: 0, shiftV: sv, shiftRangeH: shiftRanges(lib, lens).H, shiftRangeV: shiftRanges(lib, lens).V, shiftConv: lib ? lib.shiftConv : 'full',
-      x: r3(pos[0]), y: r3(pos[1]), z: r3(pos[2]), rx: s.stage.rx || 0, ry: s.stage.ry || 0, rz: s.stage.rz || 0,
+      shiftH: bs.shiftH, shiftV: bs.shiftV, shiftRangeH: shiftRanges(lib, lens).H, shiftRangeV: shiftRanges(lib, lens).V, shiftConv: lib ? lib.shiftConv : 'full',
+      x: r3(pos[0]), y: r3(pos[1]), z: r3(pos[2]), rx: rot.rx, ry: rot.ry, rz: rot.rz, rear: !!s.rearProj, follow: true, posScr: surfaceId,
       kg: (lib && lib.kg) || 0, watts: (lib && lib.watts) || 0, color: PROJ_COLORS[i % PROJ_COLORS.length]
     });
     p.projectors.push(pj);
@@ -311,7 +394,8 @@ export function footprint(p, pj, s) {
     s, corners: out, centre: out.c, per: pc,
     // overshoot (> 0) or gap (< 0) of the image beyond each screen edge, in metres (worst corner)
     over: { l: -W2 - Math.min(...us), r: Math.max(...us) - W2, t: Math.max(...vs) - H2, b: -H2 - Math.min(...vs) },
-    size: { topW, botW, leftH, rightH, w: (topW + botW) / 2, h: (leftH + rightH) / 2 },
+    // image size as seen on the screen (portrait body: its top / bottom edges run vertically)
+    size: pj.portrait ? { topW: leftH, botW: rightH, leftH: topW, rightH: botW, w: (leftH + rightH) / 2, h: (topW + botW) / 2 } : { topW, botW, leftH, rightH, w: (topW + botW) / 2, h: (leftH + rightH) / 2 },
     keyH: (topW - botW) / Math.max(topW, botW) * 100,       // + = wider at the top
     keyV: (rightH - leftH) / Math.max(rightH, leftH) * 100,   // + = taller on the right
     pxMin: Math.min(...['tl', 'tr', 'br', 'bl', 'c'].map((k) => pc[k].px)), pxMax: Math.max(...['tl', 'tr', 'br', 'bl', 'c'].map((k) => pc[k].px)),
@@ -330,30 +414,31 @@ export function footprint(p, pj, s) {
  */
 export function solveFit(p, pj, s, { W, cu = 0, cv = 0, mode = 'position' } = {}) {
   const F = screenFrame(p, s);
-  const aspect = (pj.resW || 16) / (pj.resH || 9);
-  const H = W / aspect;
-  const ceil = !!pj.ceiling;
-  const sg = ceil ? -1 : 1;                                   // body frame vs screen frame (180° roll)
-  const rot = { rx: s.stage.rx || 0, ry: s.stage.ry || 0, rz: ((s.stage.rz || 0) + (ceil ? 180 : 0) + 540) % 360 - 180 };
+  const aspect = screenAspect(pj);
+  const H = W / aspect, Wb = pj.portrait ? H : W;              // throw ratio = distance / width of the BODY's image
+  const side = sideOf(pj);
+  const rot = squareRotation(s.stage, pj);
+  const Fn = F.n.map((v) => v * side);                         // towards the projector's side of the screen
   const P = [pj.x, pj.y, pj.z], rel = sub(P, F.c);
-  let pu = dot(rel, F.r), pv = dot(rel, F.u), pz = dot(rel, F.n);
-  let tr = pj.tr, sh = sg * (pj.shiftH || 0), sv = sg * (pj.shiftV || 0);   // shifts in the screen frame
+  let pu = dot(rel, F.r), pv = dot(rel, F.u), pz = dot(rel, Fn);
+  let tr = pj.tr, { sh, sv } = screenShift(pj);               // shifts in the screen frame
   if (mode === 'position') {
     if (pz <= 0.01) return { error: 'behind' };
-    tr = pz / W; sh = (cu - pu) / W * 100; sv = (cv - pv) / H * 100;
+    tr = pz / Wb; sh = (cu - pu) / W * 100; sv = (cv - pv) / H * 100;
   } else if (mode === 'zoom') {
-    pz = tr * W; pu = cu - sh / 100 * W; pv = cv - sv / 100 * H;
+    pz = tr * Wb; pu = cu - sh / 100 * W; pv = cv - sv / 100 * H;
   } else {
     // world height fixed: solve along the screen normal / up (works for any screen tilt that keeps up·Y ≠ 0)
-    pz = tr * W; pu = cu - sh / 100 * W;
-    const base = add(add(F.c, F.r, pu), F.n, pz);          // projector with pv = 0
+    pz = tr * Wb; pu = cu - sh / 100 * W;
+    const base = add(add(F.c, F.r, pu), Fn, pz);           // projector with pv = 0
     if (Math.abs(F.u[1]) < 1e-6) return { error: 'flat' };
     pv = (pj.y - base[1]) / F.u[1];
     sv = (cv - pv) / H * 100;
   }
-  const pos = add(add(add(F.c, F.r, pu), F.u, pv), F.n, pz);
+  const pos = add(add(add(F.c, F.r, pu), F.u, pv), Fn, pz);
   const r6 = (v) => Math.round(v * 1e6) / 1e6;
-  const res = { tr: r6(tr), shiftH: r6(sg * sh), shiftV: r6(sg * sv), x: r6(pos[0]), y: r6(pos[1]), z: r6(pos[2]), ...rot, dist: pz, W, H };
+  const bs = bodyShift(pj, sh, sv);
+  const res = { tr: r6(tr), shiftH: r6(bs.shiftH), shiftV: r6(bs.shiftV), x: r6(pos[0]), y: r6(pos[1]), z: r6(pos[2]), ...rot, dist: pz, W, H };
   const lib = libModel(pj.lib);
   res.trOk = tr >= (pj.trMin || 0) - 1e-9 && tr <= (pj.trMax || 99) + 1e-9;
   res.svOk = res.shiftV >= pj.shiftRangeV[0] - 1e-9 && res.shiftV <= pj.shiftRangeV[1] + 1e-9;
@@ -373,28 +458,81 @@ export function solveFit(p, pj, s, { W, cu = 0, cv = 0, mode = 'position' } = {}
  * Returns one entry per model (image size, needed throw ratio, brightness) with its fitting lenses, plus the nearest
  * lenses when none fits (and the distance they would need).
  */
-export function findLenses({ sW, sH, D, fit = 'width', offV = 0, offH = 0, gain = 1, models = PROJECTOR_LIBRARY, custom = null }) {
+/**
+ * Tilted (and / or panned) projector in front of a vertical screen: the image is a trapezoid. Lens at offH / offV from
+ * the screen centre (m), D = horizontal distance to the screen plane, tilt / pan in degrees (+ = aimed down / towards
+ * the screen centre from the right). The lens shift puts the image centre ray on the screen centre.
+ * Returns the throw ratio (axial, on the image width) that covers the screen as asked by `fit` — the nearest edge
+ * decides — with the trapezoid it draws (keystone, share of the pixels left after digital correction, shift needed).
+ */
+export function tiltedThrow({ sW, sH, D, offV = 0, offH = 0, tilt = 0, pan = 0, aspect = 16 / 9, fit = 'cover' }) {
+  const th = tilt * Math.PI / 180, ph = pan * Math.PI / 180;
+  const f = [-Math.sin(ph) * Math.cos(th), -Math.sin(th), Math.cos(ph) * Math.cos(th)], r = [Math.cos(ph), 0, Math.sin(ph)];
+  const u = [f[1] * r[2] - f[2] * r[1], f[2] * r[0] - f[0] * r[2], f[0] * r[1] - f[1] * r[0]];
+  const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const w = [-offH, -offV, D], wf = dot(w, f);
+  if (!(wf > 1e-6)) return null;                                   // screen centre behind the lens
+  const x0 = dot(w, r) / wf, c0 = dot(w, u) / wf;                  // centre ray on the unit image plane
+  const hit = (x, y) => { const d = [f[0] + x * r[0] + y * u[0], f[1] + x * r[1] + y * u[1], f[2] + x * r[2] + y * u[2]]; if (!(d[2] > 1e-6)) return null; const t = D / d[2]; return { x: offH + t * d[0], y: offV + t * d[1] }; };
+  const quad = (a) => { const b = a / aspect; const q = [hit(x0 - a, c0 + b), hit(x0 + a, c0 + b), hit(x0 + a, c0 - b), hit(x0 - a, c0 - b)]; return q.every(Boolean) ? q : null; };   // tl tr br bl
+  const inside = (q, P) => { let sg = 0; for (let i = 0; i < 4; i++) { const A = q[i], B = q[(i + 1) % 4], cr = (B.x - A.x) * (P.y - A.y) - (B.y - A.y) * (P.x - A.x); if (Math.abs(cr) < 1e-12) continue; const s1 = Math.sign(cr); if (sg && s1 !== sg) return false; sg = s1; } return true; };
+  const midH = (q) => (Math.hypot(q[0].x - q[3].x, q[0].y - q[3].y) + Math.hypot(q[1].x - q[2].x, q[1].y - q[2].y)) / 2;
+  const midW = (q) => (Math.hypot(q[1].x - q[0].x, q[1].y - q[0].y) + Math.hypot(q[2].x - q[3].x, q[2].y - q[3].y)) / 2;
+  const ok = (a) => {
+    const q = quad(a); if (!q) return fit === 'contain' ? false : true;
+    if (fit === 'contain') return q.every((P) => Math.abs(P.x) <= sW / 2 + 1e-9 && Math.abs(P.y) <= sH / 2 + 1e-9);
+    const hx = fit === 'height' ? Math.min(sW / 2, midW(q) / 2 * 0.999) : sW / 2, hy = fit === 'width' ? Math.min(sH / 2, midH(q) / 2 * 0.999) : sH / 2;
+    return [[-hx, hy], [hx, hy], [hx, -hy], [-hx, -hy]].every(([x, y]) => inside(q, { x, y }));
+  };
+  // covering grows with the image (a = half width on the unit plane): smallest a that covers, largest that stays inside
+  let lo = 1e-4, hi = 4;
+  if (fit === 'contain') { if (!ok(lo)) return null; for (let k = 0; k < 60; k++) { const m = (lo + hi) / 2; if (ok(m)) lo = m; else hi = m; } }
+  else { if (!ok(hi)) return null; for (let k = 0; k < 60; k++) { const m = (lo + hi) / 2; if (ok(m)) hi = m; else lo = m; } }
+  const a = fit === 'contain' ? lo : hi, q = quad(a);
+  if (!q) return null;
+  const topW = Math.hypot(q[1].x - q[0].x, q[1].y - q[0].y), botW = Math.hypot(q[2].x - q[3].x, q[2].y - q[3].y);
+  const leftH = Math.hypot(q[0].x - q[3].x, q[0].y - q[3].y), rightH = Math.hypot(q[1].x - q[2].x, q[1].y - q[2].y);
+  let area = 0; for (let i = 0; i < 4; i++) { const A = q[i], B = q[(i + 1) % 4]; area += A.x * B.y - B.x * A.y; } area = Math.abs(area) / 2;
+  const used = Math.min(sW, fit === 'height' ? sH * aspect : sW) * Math.min(sH, fit === 'width' ? sW / aspect : sH);   // screen part the corrected image keeps
+  const b = a / aspect;
+  return { tr: 1 / (2 * a), quad: q, topW, botW, leftH, rightH, W: (topW + botW) / 2, H: (leftH + rightH) / 2, area,
+    keyH: (topW - botW) / Math.max(topW, botW) * 100, keyV: (leftH - rightH) / Math.max(leftH, rightH) * 100,
+    pxUsed: Math.min(100, (fit === 'contain' ? 100 : used / area * 100)),
+    shV: c0 / (2 * b) * 100, shH: x0 / (2 * a) * 100,             // stored convention (% of the full image)
+    axial: wf, aimed: Math.atan2(offV, D) * 180 / Math.PI };
+}
+
+export function findLenses({ sW, sH, D, fit = 'width', offV = 0, offH = 0, gain = 1, models = PROJECTOR_LIBRARY, custom = null, portrait = false, tilt = null, pan = 0 }) {
   const out = [];
   const list = custom ? [custom, ...models] : models;
   for (const m of list) {
-    const aspect = m.resW / m.resH;
-    const W = fit === 'height' ? sH * aspect : fit === 'cover' ? Math.max(sW, sH * aspect) : fit === 'contain' ? Math.min(sW, sH * aspect) : sW;
-    const H = W / aspect;
-    const tr = D / W;
+    const aspect = portrait ? m.resH / m.resW : m.resW / m.resH;   // image aspect on the screen (portrait = body on its side)
+    const sqW = fit === 'height' ? sH * aspect : fit === 'cover' ? Math.max(sW, sH * aspect) : fit === 'contain' ? Math.min(sW, sH * aspect) : sW;
+    const sqH = sqW / aspect;
     // image centre = screen centre: the shift moves it from the lens axis by −off
-    const shV = -offV / H * 100, shH = -offH / W * 100;           // stored convention (% of the full image)
-    const lux = m.lumens / (W * H);
+    const sq = { tr: D / (portrait ? sqH : sqW), shV: -offV / sqH * 100, shH: -offH / sqW * 100 };
+    const tl = tilt != null && !portrait ? tiltedThrow({ sW, sH, D, offV, offH, tilt, pan, aspect, fit }) : null;
+    if (tilt != null && !portrait && !tl) continue;
+    const W = tl ? tl.W : sqW, H = tl ? tl.H : sqH, Wb = portrait ? H : W;
+    const tr = tl ? tl.tr : sq.tr;
+    const shV = tl ? tl.shV : sq.shV, shH = tl ? tl.shH : sq.shH;   // stored convention (% of the full image)
+    const lux = m.lumens / (tl ? tl.area : W * H);
     const lenses = (m.lenses || []).map((l) => {
       const trMax = l.trMax || l.trMin;
       const r = shiftRanges(m, l);
       const inZoom = tr >= l.trMin - 1e-9 && tr <= trMax + 1e-9;
-      const shiftOk = shV >= r.V[0] - 1e-9 && shV <= r.V[1] + 1e-9 && shH >= r.H[0] - 1e-9 && shH <= r.H[1] + 1e-9;
-      return { lens: l, inZoom, shiftOk, shiftKnown: r.published, zoom: trMax > l.trMin ? (tr - l.trMin) / (trMax - l.trMin) * 100 : null,
-        dMin: l.trMin * W, dMax: trMax * W, gap: inZoom ? 0 : (tr < l.trMin ? l.trMin - tr : tr - trMax), rangeV: r.V, rangeH: r.H };
+      const bV = portrait ? -shH : shV, bH = portrait ? shV : shH;   // in the body's own frame
+      const shiftOk = bV >= r.V[0] - 1e-9 && bV <= r.V[1] + 1e-9 && bH >= r.H[0] - 1e-9 && bH <= r.H[1] + 1e-9;
+      // tilted: would the lens reach the screen square (no tilt, no keystone) with its shift alone?
+      const sqV = portrait ? -sq.shH : sq.shV, sqH2 = portrait ? sq.shV : sq.shH;
+      const squareOk = tl ? (sq.tr >= l.trMin - 1e-9 && sq.tr <= trMax + 1e-9 && sqV >= r.V[0] - 1e-9 && sqV <= r.V[1] + 1e-9 && sqH2 >= r.H[0] - 1e-9 && sqH2 <= r.H[1] + 1e-9) : null;
+      return { lens: l, inZoom, shiftOk, squareOk, shiftKnown: r.published, zoom: trMax > l.trMin ? (tr - l.trMin) / (trMax - l.trMin) * 100 : null,
+        dMin: tl ? D * l.trMin / tr : l.trMin * Wb, dMax: tl ? D * trMax / tr : trMax * Wb,   // tilted: horizontal distance (≈, same heights)
+        gap: inZoom ? 0 : (tr < l.trMin ? l.trMin - tr : tr - trMax), rangeV: r.V, rangeH: r.H };
     });
     const fits = lenses.filter((x) => x.inZoom);
     const near = fits.length ? [] : lenses.slice().sort((a, b) => a.gap - b.gap).slice(0, 2);
-    out.push({ model: m, W, H, tr, shV, shH, conv: m.shiftConv || 'full', lux, nits: lux * gain / Math.PI, pxmm: W / m.resW * 1000, fits, near });
+    out.push({ model: m, W, H, tr, shV, shH, conv: m.shiftConv || 'full', lux, nits: lux * gain / Math.PI, pxmm: W / (portrait ? m.resH : m.resW) * 1000, fits, near, tilted: tl, square: sq });
   }
   return out;
 }
@@ -408,4 +546,45 @@ export function migrateLibraryRefs(p) {
     const l = libLens(m, pj.lens);
     if (l) pj.lens = l.id;
   }
+}
+
+// ------------------------------------------------------------------ documents (screen sheets, synoptic, technical file)
+/** Lens name of a projector (library name when known, else its id). */
+export function lensName(pj) { const l = libLens(libModel(pj.lib), pj.lens); return l ? l.name : (pj.lens || ''); }
+/** Every projector with its optics report and the projection screen it lights:
+ *  the screen its centre ray hits in 3D, else the screen whose slices go to the projector's output. */
+export function projectorRows(p) {
+  return (p.projectors || []).map((pj) => {
+    let r = { hit: null };
+    try { r = report(p, pj); } catch (_) { /* not placed */ }
+    let screen = r.hit ? r.hit.s : null;
+    if (!screen && pj.surf) { const sf = M.getSurface(p, pj.surf); if (sf && sf.kind === 'proj') screen = sf; }   // made by the blend wizard
+    if (!screen && pj.out) {
+      const sl = (p.slices || []).find((x) => x.out === pj.out && (M.getSurface(p, x.surfaceId) || {}).kind === 'proj');
+      screen = sl ? M.getSurface(p, sl.surfaceId) : null;
+    }
+    const lm = (+pj.lumens || 0) * Math.max(1, +pj.stack || 1);
+    return { pj, r, screen, lm, out: (p.outputs || []).find((o) => o.id === pj.out) || null, model: ([pj.brand, pj.model].filter(Boolean).join(' ') || '—') + (stackLabel(pj) ? ' · ' + stackLabel(pj) : '') + (pj.portrait ? ' · portrait' : ''), lens: lensName(pj) };
+  });
+}
+/** Projectors of one projection screen + totals (lumens, luminance, distances, blend zones, power, weight). */
+export function screenProjection(p, s) {
+  const rows = projectorRows(p).filter((x) => x.screen && x.screen.id === s.id);
+  const m = M.surfaceMeters(p, s);
+  const area = m.w * m.h;
+  const lm = rows.reduce((a, x) => a + x.lm, 0);
+  const gain = +s.gain || 1;
+  const lux = area > 0 ? lm / area : 0;                      // average, before overlaps / losses
+  const dists = rows.map((x) => x.r.dist).filter((d) => d > 0);
+  const slices = (p.slices || []).filter((sl) => sl.surfaceId === s.id);
+  const blends = slices.reduce((a, sl) => a + ['l', 'r', 't', 'b'].filter((k) => sl.blend && +sl.blend[k] > 0).length, 0) / 2;
+  const blendPx = Math.max(0, ...slices.flatMap((sl) => ['l', 'r', 't', 'b'].map((k) => (sl.blend ? +sl.blend[k] || 0 : 0))));
+  return {
+    rows, m, area, lm, gain, lux, nits: lux * gain / Math.PI,
+    distMin: dists.length ? Math.min(...dists) : 0, distMax: dists.length ? Math.max(...dists) : 0,
+    pxmm: m.assumed ? 0 : m.w / Math.max(1, s.w) * 1000,
+    blends: Math.round(blends), blendPx, slices,
+    watts: rows.reduce((a, x) => a + (+x.pj.watts || 0) * Math.max(1, +x.pj.stack || 1), 0),
+    kg: rows.reduce((a, x) => a + (+x.pj.kg || 0) * Math.max(1, +x.pj.stack || 1), 0)
+  };
 }
